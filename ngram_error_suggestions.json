@@ -1,0 +1,83 @@
+{
+  "climmate": {
+    "error_type": "TYPO_DETECTED",
+    "user_message_nl": "Geen exacte resultaten gevonden voor 'climmate'. Bedoelde je misschien 'climate'?",
+    "suggested_queries": [
+      "climate",
+      "climate change",
+      "global warming"
+    ],
+    "recommended_filters": {
+      "corpus_region": "American English",
+      "pos_tag": "_NOUN"
+    },
+    "did_you_mean": "climate"
+  },
+  "democracie": {
+    "error_type": "LANGUAGE_OR_SPELLING_MISMATCH",
+    "user_message_nl": "Geen resultaten in het geselecteerde Engelse corpus voor 'democracie'. Zoek je het Engelse 'democracy' of wil je wisselen naar het Nederlandstalige corpus ('Dutch')?",
+    "suggested_queries": [
+      "democracy",
+      "democratie",
+      "democratic"
+    ],
+    "recommended_filters": {
+      "corpus_region": "Dutch",
+      "pos_tag": "_NOUN"
+    },
+    "did_you_mean": "democracy"
+  },
+  "artifical intelligence": {
+    "error_type": "TYPO_DETECTED",
+    "user_message_nl": "Let op: veelvoorkomende spelfout in 'artifical' (ontbrekende 'i'). We tonen suggesties voor 'artificial intelligence'.",
+    "suggested_queries": [
+      "artificial intelligence",
+      "machine learning",
+      "neural network"
+    ],
+    "recommended_filters": {
+      "start_year": 1950,
+      "end_year": 2026,
+      "pos_tag": "_NOUN"
+    },
+    "did_you_mean": "artificial intelligence"
+  },
+  "telegramm": {
+    "error_type": "TYPO_DETECTED",
+    "user_message_nl": "'telegramm' lijkt op de Duitse spelling. Gebruik 'telegram' voor de Engelse en Nederlandse corpora.",
+    "suggested_queries": [
+      "telegram",
+      "telegraph",
+      "morse code"
+    ],
+    "recommended_filters": {
+      "start_year": 1840,
+      "end_year": 1960,
+      "pos_tag": "_NOUN"
+    },
+    "did_you_mean": "telegram"
+  },
+  "climate_NOUN": {
+    "error_type": "LEGACY_SYNTAX_USED",
+    "user_message_nl": "Je hoeft geen '_NOUN' meer te typen in de zoekbalk! Gebruik de nieuwe visuele Woordsoort-checkboxes (Zelfstandig naamwoord) onder het zoekveld.",
+    "suggested_queries": [
+      "climate"
+    ],
+    "recommended_filters": {
+      "pos_tag": "_NOUN"
+    },
+    "did_you_mean": "climate"
+  },
+  "artificial intelligence makes": {
+    "error_type": "NGRAM_TOO_SPECIFIC",
+    "user_message_nl": "Deze woordcombinatie komt te weinig voor om een betrouwbare trendlijn te tekenen. Probeer de kernterm 'artificial intelligence' in combinatie met het werkwoord-filter ('_VERB').",
+    "suggested_queries": [
+      "artificial intelligence",
+      "intelligence"
+    ],
+    "recommended_filters": {
+      "pos_tag": "_VERB"
+    },
+    "did_you_mean": "artificial intelligence"
+  }
+}
