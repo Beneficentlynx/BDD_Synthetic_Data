@@ -42,13 +42,19 @@ END_YEAR = 2026
 YEARS = np.arange(START_YEAR, END_YEAR + 1)
 
 # Zoektermen (ngrams) waarmee verschillende soorten historische trends worden getest
+# Bevat nu ook Nederlandse tegenhangers voor meertalige zoekopdrachten (Cross-Language Support)
 NGRAMS = [
     "climate",
+    "klimaat",
     "democracy",
+    "democratie",
     "artificial intelligence",
+    "kunstmatige intelligentie",
     "telegram",
     "Paris",
+    "Parijs",
     "paris",
+    "parijs",
 ]
 
 # Woordsoorten en vervoegingen (POS-tags) voor het testen van de visuele tag-filters
@@ -127,55 +133,45 @@ def generate_base_trend(years: np.ndarray, ngram: str) -> np.ndarray:
     """
     Berekent de onderliggende 'gladde' basistrend (relatieve frequentie in %)
     voor elke zoekterm over de periode 1800-2026.
-
-    UX-doel:
-    Wanneer de gebruiker de Smoothing Slider in de UI op een hoge waarde zet
-    (bijv. moving average window = 20 tot 50 jaar), filtert het algoritme de
-    jaarlijkse ruis weg en komt deze herkenbare langetermijntrend tevoorschijn.
+    Ondersteunt zowel Engelse als Nederlandse termen (Cross-Language).
     """
-    if ngram == "telegram":
-        # Wiskundig patroon: Log-normale / asymmetrische Gaussische curve.
-        # Vrijwel 0 vóór 1844, sterke opkomst in de late 19e eeuw, piek rond 1915-1925,
-        # en een gestage daling na 1920 door opkomst telefoon, e-mail en internet.
+    canonical_map = {
+        "klimaat": "climate",
+        "democratie": "democracy",
+        "kunstmatige intelligentie": "artificial intelligence",
+        "Parijs": "Paris",
+        "parijs": "paris",
+    }
+    target = canonical_map.get(ngram, ngram)
+
+    if target == "telegram":
         rise = 1.0 / (1.0 + np.exp(-(years - 1865) / 8.0))
         decay = np.exp(-np.maximum(0, years - 1920) / 38.0)
         baseline = 0.0005 + 0.038 * rise * decay
 
-    elif ngram == "climate":
-        # Wiskundig patroon: Lage stabiele basis in de 19e en vroege 20e eeuw,
-        # gevolgd door een steile sigmoïde / exponentiële stijging na 1980.
+    elif target == "climate":
         modern_surge = 0.065 / (1.0 + np.exp(-(years - 2002) / 9.5))
         early_science = 0.0035 + 0.002 * np.sin((years - 1800) / 30.0)
         baseline = np.maximum(0.001, early_science + modern_surge)
 
-    elif ngram == "democracy":
-        # Wiskundig patroon: Geleidelijke opmars sinds 1800 met golfbewegingen
-        # rond grote democratiseringsgolven (1918, 1945, 1989, jaren 2010-2026).
+    elif target == "democracy":
         linear_growth = 0.004 + 0.025 * ((years - START_YEAR) / (END_YEAR - START_YEAR))
         wave_1945 = 0.018 * np.exp(-0.5 * ((years - 1945) / 10.0) ** 2)
         wave_1990 = 0.022 * np.exp(-0.5 * ((years - 1992) / 8.0) ** 2)
         wave_2020 = 0.015 * np.exp(-0.5 * ((years - 2020) / 7.0) ** 2)
         baseline = linear_growth + wave_1945 + wave_1990 + wave_2020
 
-    elif ngram == "artificial intelligence":
-        # Wiskundig patroon: Vrijwel onbestaand vóór 1956 (Dartmouth-conferentie),
-        # eerste 'AI-lente' in jaren '80, gevolgd door een enorme exponentiële
-        # explosie na 2012 (Deep Learning) en 2022-2026 (Generative AI).
+    elif target == "artificial intelligence":
         ai_winter_spring = 0.008 * np.exp(-0.5 * ((years - 1987) / 5.0) ** 2)
         deep_learning_boom = 0.075 / (1.0 + np.exp(-(years - 2021) / 2.8))
         pre_1955_mask = np.where(years < 1954, 0.00005, 1.0)
         baseline = (0.0002 + ai_winter_spring + deep_learning_boom) * pre_1955_mask
 
-    elif ngram == "Paris":
-        # Hoofdlettergevoelig ('Paris' als wereldstad): hoog in de 19e/20e eeuw,
-        # met pieken rond wereldtentoonstellingen (1889, 1900), verdragen (1919) en 2015.
+    elif target == "Paris":
         belle_epoque = 0.022 * np.exp(-0.5 * ((years - 1900) / 22.0) ** 2)
         baseline = 0.018 + belle_epoque
 
-    elif ngram == "paris":
-        # Kleine letters ('paris' of case-insensitive tegenhanger):
-        # veel lagere frequentie wanneer case_sensitive=True (bijv. botanische naam
-        # of OCR-fouten), maar bij case_sensitive=False worden 'Paris' + 'paris' gecombineerd.
+    elif target == "paris":
         baseline = 0.0025 + 0.001 * np.cos((years - 1800) / 25.0)
 
     else:
@@ -188,12 +184,15 @@ def apply_historical_spikes(years: np.ndarray, trend: np.ndarray, ngram: str) ->
     """
     Voegt kunstmatige, scherpe pieken toe op specifieke historische jaartallen
     die direct correleren met de kolom 'historical_event'.
-
-    UX-doel:
-    Hiermee testen we of een plotselinge uitschieter in de lijngrafiek visueel
-    verklaard wordt door een klikbare annotatie op de tijdlijn (bijv. WOI, WOII,
-    Klimaatakkoord van Parijs of de doorbraak van AI).
     """
+    canonical_map = {
+        "klimaat": "climate",
+        "democratie": "democracy",
+        "kunstmatige intelligentie": "artificial intelligence",
+        "Parijs": "Paris",
+        "parijs": "paris",
+    }
+    target = canonical_map.get(ngram, ngram)
     spiked = trend.copy()
 
     # Specifieke gebeurtenis-pieken per zoekterm (Gaussian impulses met smalle breedte)
@@ -201,7 +200,7 @@ def apply_historical_spikes(years: np.ndarray, trend: np.ndarray, ngram: str) ->
         "telegram": [
             (1844, 0.012, 1.5),  # Morse demonstratie
             (1861, 0.018, 2.0),  # Amerikaanse Burgeroorlog
-            (1914, 0.035, 1.8),  # Start WOI (intensief diplomatiek & militair telegraafverkeer)
+            (1914, 0.035, 1.8),  # Start WOI
             (1918, 0.028, 1.5),  # Einde WOI
             (1939, 0.020, 1.8),  # Start WOII
         ],
@@ -219,10 +218,10 @@ def apply_historical_spikes(years: np.ndarray, trend: np.ndarray, ngram: str) ->
             (1989, 0.045, 1.4),  # Val van de Berlijnse Muur
         ],
         "artificial intelligence": [
-            (1956, 0.012, 1.2),  # Dartmouth Workshop (geboorte van het vakgebied)
-            (1995, 0.009, 1.5),  # Opkomst Internet & expert systems
+            (1956, 0.012, 1.2),  # Dartmouth Workshop
+            (1995, 0.009, 1.5),  # Opkomst Internet
             (2020, 0.022, 1.3),  # Digitaliseringsslag COVID-19
-            (2023, 0.055, 1.2),  # Doorbraak Generatieve AI (ChatGPT/LLMs)
+            (2023, 0.055, 1.2),  # Doorbraak Generatieve AI
         ],
         "Paris": [
             (1914, 0.020, 1.5),  # WOI
@@ -236,7 +235,7 @@ def apply_historical_spikes(years: np.ndarray, trend: np.ndarray, ngram: str) ->
         ],
     }
 
-    for event_year, amplitude, sigma in spike_definitions.get(ngram, []):
+    for event_year, amplitude, sigma in spike_definitions.get(target, []):
         spiked += amplitude * np.exp(-0.5 * ((years - event_year) / sigma) ** 2)
 
     return spiked
@@ -439,11 +438,28 @@ def build_synthetic_dataset(seed: int = 42) -> pd.DataFrame:
     # 'artificial intelligence' iets sterker in 'American English').
     region_affinity = {
         ("Paris", "European Fiction"): 1.45,
-        ("climate", "American English"): 1.15,
-        ("climate", "Dutch"): 1.25,
-        ("democracy", "American English"): 1.20,
+        ("Paris", "British English"): 1.20,
+        ("Parijs", "Dutch"): 1.45,
+        ("climate", "American English"): 1.25,
+        ("climate", "British English"): 1.15,
+        ("climate", "Dutch"): 0.30,
+        ("klimaat", "Dutch"): 1.50,
+        ("klimaat", "European Fiction"): 0.15,
+        ("klimaat", "American English"): 0.04,
+        ("democracy", "American English"): 1.30,
+        ("democracy", "British English"): 1.15,
+        ("democracy", "Dutch"): 0.25,
+        ("democratie", "Dutch"): 1.45,
+        ("democratie", "European Fiction"): 0.20,
+        ("democratie", "American English"): 0.04,
         ("telegram", "British English"): 1.30,
-        ("artificial intelligence", "American English"): 1.35,
+        ("telegram", "American English"): 1.10,
+        ("telegram", "Dutch"): 1.05,
+        ("artificial intelligence", "American English"): 1.40,
+        ("artificial intelligence", "British English"): 1.10,
+        ("artificial intelligence", "Dutch"): 0.20,
+        ("kunstmatige intelligentie", "Dutch"): 1.35,
+        ("kunstmatige intelligentie", "American English"): 0.03,
     }
 
     for ngram in NGRAMS:
@@ -452,21 +468,19 @@ def build_synthetic_dataset(seed: int = 42) -> pd.DataFrame:
 
         for region in CORPUS_REGIONS:
             total_books_array = region_volumes[region]
-            affinity = region_affinity.get((ngram, region), 1.0)
+            affinity = region_affinity.get((ngram, region), 0.85)
 
             for pos_tag in POS_TAGS:
                 pos_factor = pos_multipliers[pos_tag]
 
                 for case_sensitive in [True, False]:
-                    # UX-logica voor de Case-Sensitivity toggle:
-                    # Als case_sensitive=False is, worden hoofd- en kleine letters bij elkaar
-                    # opgeteld (hogere frequentie, en 'Paris'/'paris' gedragen zich identiek).
-                    # Als case_sensitive=True is, zien we het scherpe verschil tussen
-                    # 'Paris' (de stad, veel treffers) en 'paris' (kleine letter, weinig treffers).
                     if not case_sensitive:
                         if ngram in ("Paris", "paris"):
                             combined_base = generate_base_trend(YEARS, "Paris") + generate_base_trend(YEARS, "paris")
                             effective_trend = apply_historical_spikes(YEARS, combined_base, "Paris")
+                        elif ngram in ("Parijs", "parijs"):
+                            combined_base = generate_base_trend(YEARS, "Parijs") + generate_base_trend(YEARS, "parijs")
+                            effective_trend = apply_historical_spikes(YEARS, combined_base, "Parijs")
                         else:
                             effective_trend = spiked_trend * 1.18  # Inclusief gekapitaliseerde varianten aan begin zin
                     else:

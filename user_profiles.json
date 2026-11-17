@@ -1,0 +1,174 @@
+{
+  "active_profile": "Lucas (Onderzoeker)",
+  "profiles": {
+    "Lucas (Onderzoeker)": {
+      "preferences": {
+        "regions": [
+          "American English",
+          "Dutch"
+        ],
+        "chart_type": "Lijngrafiek",
+        "interpolation": "monotone",
+        "palette": "tableau10",
+        "y_scale": "Lineair",
+        "smoothing": 3,
+        "year_range": [
+          1800,
+          2026
+        ],
+        "show_raw": true,
+        "show_events": true,
+        "show_points": false,
+        "stroke_width": 3,
+        "cross_lang_mode": false
+      },
+      "history": [
+        {
+          "query": "climate",
+          "timestamp": "2026-11-15 18:47",
+          "regions": [
+            "American English",
+            "Dutch"
+          ],
+          "pos_tag": "NONE",
+          "case_sensitive": false,
+          "year_range": [
+            1800,
+            2026
+          ],
+          "smoothing": 3,
+          "cross_lang": false
+        },
+        {
+          "query": "democratie",
+          "timestamp": "2026-11-15 18:46",
+          "regions": [
+            "Dutch"
+          ],
+          "pos_tag": "NONE",
+          "case_sensitive": false,
+          "year_range": [
+            1800,
+            2026
+          ],
+          "smoothing": 3,
+          "cross_lang": true
+        },
+        {
+          "query": "climate",
+          "timestamp": "2026-11-15 17:30",
+          "regions": [
+            "American English",
+            "Dutch"
+          ],
+          "pos_tag": "NONE",
+          "case_sensitive": false,
+          "year_range": [
+            1800,
+            2026
+          ],
+          "smoothing": 3
+        },
+        {
+          "query": "democracy",
+          "timestamp": "2026-11-15 17:45",
+          "regions": [
+            "American English",
+            "British English"
+          ],
+          "pos_tag": "NONE",
+          "case_sensitive": false,
+          "year_range": [
+            1800,
+            2026
+          ],
+          "smoothing": 5
+        }
+      ],
+      "favorites": [
+        {
+          "query": "climate",
+          "label": "Klimaat & Parijs Akkoord",
+          "note": "Opvallende piek in 2015 en exponentiële toename na 1990",
+          "timestamp": "2026-11-15 17:35",
+          "regions": [
+            "American English",
+            "Dutch"
+          ],
+          "pos_tag": "NONE",
+          "case_sensitive": false,
+          "year_range": [
+            1800,
+            2026
+          ],
+          "smoothing": 3
+        },
+        {
+          "query": "artificial intelligence",
+          "label": "Opkomst van AI (1956 - 2026)",
+          "note": "Dartmouth workshop (1956), AI-lente en LLM revolutie (2023)",
+          "timestamp": "2026-11-15 17:50",
+          "regions": [
+            "American English",
+            "British English"
+          ],
+          "pos_tag": "NONE",
+          "case_sensitive": false,
+          "year_range": [
+            1950,
+            2026
+          ],
+          "smoothing": 2
+        }
+      ]
+    },
+    "Student Geschiedenis": {
+      "preferences": {
+        "regions": [
+          "British English",
+          "European Fiction"
+        ],
+        "chart_type": "Vlakgrafiek",
+        "interpolation": "monotone",
+        "palette": "viridis",
+        "y_scale": "Lineair",
+        "smoothing": 5,
+        "year_range": [
+          1840,
+          1950
+        ],
+        "show_raw": true,
+        "show_events": true,
+        "show_points": false,
+        "stroke_width": 3,
+        "cross_lang_mode": false
+      },
+      "history": [],
+      "favorites": []
+    },
+    "Gastgebruiker": {
+      "preferences": {
+        "regions": [
+          "American English",
+          "British English"
+        ],
+        "chart_type": "Lijngrafiek",
+        "interpolation": "monotone",
+        "palette": "tableau10",
+        "y_scale": "Lineair",
+        "smoothing": 3,
+        "year_range": [
+          1800,
+          2026
+        ],
+        "show_raw": true,
+        "show_events": true,
+        "show_points": false,
+        "stroke_width": 3,
+        "cross_lang_mode": false
+      },
+      "history": [],
+      "favorites": []
+    }
+  }
+}
