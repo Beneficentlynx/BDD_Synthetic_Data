@@ -1115,22 +1115,6 @@ def main() -> None:
                     """
                 )
 
-        # Snelle Tijdselectie Presets (Verbetering 4)
-        preset_cols = st.columns(6)
-        presets = [
-            ("🌐 Volledig (1800-2026)", (1800, 2026)),
-            ("📜 19e Eeuw (1800-1899)", (1800, 1899)),
-            ("⚔️ WWI / Interbellum (1914-1939)", (1914, 1939)),
-            ("🕊️ WWII / Wederopbouw (1939-1970)", (1939, 1970)),
-            ("💻 Digitaal Tijdperk (1980-2026)", (1980, 2026)),
-            ("🚀 21e Eeuw (2000-2026)", (2000, 2026)),
-        ]
-        for p_idx, (p_label, p_years) in enumerate(presets):
-            with preset_cols[p_idx]:
-                if st.button(p_label, key=f"t_preset_{p_idx}", use_container_width=True):
-                    st.session_state["year_range"] = p_years
-                    st.rerun()
-
         st.markdown('<div class="ngram-filter-divider"></div>', unsafe_allow_html=True)
 
         # ----------------------------------------------------------------------
