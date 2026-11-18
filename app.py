@@ -305,10 +305,51 @@ def load_user_profiles() -> Dict[str, Any]:
     return default_data
 
 
+def get_user_profiles() -> Dict[str, Any]:
+    """Haalt gebruikersprofielen op uit de session_state cache of laadt ze éénmalig van schijf."""
+    if "profiles_data" not in st.session_state:
+        st.session_state["profiles_data"] = load_user_profiles()
+    return st.session_state["profiles_data"]
+
+
 def save_user_profiles(data: Dict[str, Any]) -> None:
-    """Slaat gebruikersprofielen op naar JSON."""
+    """Slaat gebruikersprofielen op naar JSON en synchroniseert in-memory state."""
+    st.session_state["profiles_data"] = data
     with open(USER_PROFILES_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def apply_profile_to_session_state(profile_name: str) -> None:
+    """Synchroniseert alle Streamlit widget states direct met de voorkeuren van het profiel."""
+    profiles_data = get_user_profiles()
+    prof_dict = profiles_data.get("profiles", {}).get(profile_name, {})
+    prefs = prof_dict.get("preferences", {})
+    if not prefs:
+        return
+
+    st.session_state["selected_regions"] = list(prefs.get("regions", ["American English"]))
+    st.session_state["chart_type_sel"] = prefs.get("chart_type", "Lijngrafiek")
+    st.session_state["chart_type"] = prefs.get("chart_type", "Lijngrafiek")
+    st.session_state["palette_choice_sel"] = prefs.get("palette", "Google Kleuren")
+    st.session_state["palette"] = prefs.get("palette", "Google Kleuren")
+    st.session_state["yscale_sel"] = prefs.get("y_scale", "Lineair")
+    st.session_state["y_scale"] = prefs.get("y_scale", "Lineair")
+    st.session_state["y_metric_sel"] = prefs.get("y_metric", "Relatieve frequentie (%)")
+    st.session_state["y_metric"] = prefs.get("y_metric", "Relatieve frequentie (%)")
+    st.session_state["smoothing_val"] = int(prefs.get("smoothing", 3))
+    yr = prefs.get("year_range", [1800, 2026])
+    st.session_state["year_range"] = (int(yr[0]), int(yr[1]))
+    st.session_state["sr_cb"] = bool(prefs.get("show_raw", True))
+    st.session_state["show_raw"] = bool(prefs.get("show_raw", True))
+    st.session_state["se_cb"] = bool(prefs.get("show_events", True))
+    st.session_state["show_events"] = bool(prefs.get("show_events", True))
+    st.session_state["sp_cb"] = bool(prefs.get("show_points", False))
+    st.session_state["show_points"] = bool(prefs.get("show_points", False))
+    st.session_state["sw_sel"] = int(prefs.get("stroke_width", 2))
+    st.session_state["stroke_width"] = int(prefs.get("stroke_width", 2))
+    st.session_state["interp_sel"] = prefs.get("interpolation", "monotone")
+    st.session_state["interpolation"] = prefs.get("interpolation", "monotone")
+    st.session_state["cross_lang_mode"] = bool(prefs.get("cross_lang_mode", False))
 
 
 def add_search_to_history(
@@ -321,16 +362,16 @@ def add_search_to_history(
     smoothing: int,
     cross_lang: bool,
 ) -> None:
-    """Voegt een zoekopdracht toe aan de geschiedenis van het actieve profiel."""
-    profiles_data = load_user_profiles()
-    if profile_name not in profiles_data["profiles"]:
+    """Voegt een zoekopdracht toe aan de geschiedenis van het actieve profiel (zonder onnodige I/O)."""
+    profiles_data = get_user_profiles()
+    if profile_name not in profiles_data.get("profiles", {}):
         return
 
     history_list = profiles_data["profiles"][profile_name].get("history", [])
     entry = {
         "query": query,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "regions": regions,
+        "regions": list(regions),
         "pos_tag": pos_tag,
         "case_sensitive": case_sensitive,
         "year_range": list(year_range),
@@ -347,42 +388,23 @@ def add_search_to_history(
 # ==============================================================================
 # AWS S3 & LIVE GOOGLE NGRAM DATABASE INTEGRATIE
 # ==============================================================================
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def query_aws_s3_ngram_bucket(s3_subpath: str = "ngrams/books/20090715/") -> Dict[str, Any]:
     """
     Bevraagt de publieke Google Books Ngram dataset op AWS S3:
-    `aws s3 ls --no-sign-request s3://datasets.elasticmapreduce/ngrams/books/`
+    Probeert direct de snelle HTTPS REST API (0.4s) voor optimale responsiviteit.
     """
     s3_uri = f"s3://datasets.elasticmapreduce/{s3_subpath}"
     cli_cmd = f"aws s3 ls --no-sign-request {s3_uri}"
 
-    if shutil.which("aws") is not None:
-        try:
-            proc = subprocess.run(
-                ["aws", "s3", "ls", "--no-sign-request", s3_uri],
-                capture_output=True,
-                text=True,
-                timeout=8,
-                check=False,
-            )
-            if proc.returncode == 0 and proc.stdout.strip():
-                lines = [line.strip() for line in proc.stdout.strip().splitlines() if line.strip()]
-                return {
-                    "success": True,
-                    "method": "AWS CLI (`aws s3 ls --no-sign-request`)",
-                    "command": cli_cmd,
-                    "entries": lines,
-                }
-        except Exception:
-            pass
-
+    # Methode 1: Snelle directe HTTPS REST API (vermijdt trage subprocess overhead op Windows)
     try:
         params = urllib.parse.urlencode(
             {"list-type": "2", "prefix": s3_subpath, "delimiter": "/", "max-keys": "50"}
         )
         url = f"https://s3.amazonaws.com/datasets.elasticmapreduce?{params}"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 NgramVisualBuilder/1.0"})
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with urllib.request.urlopen(req, timeout=3) as resp:
             xml_bytes = resp.read()
 
         root = ET.fromstring(xml_bytes)
@@ -412,107 +434,143 @@ def query_aws_s3_ngram_bucket(s3_subpath: str = "ngrams/books/20090715/") -> Dic
                 "command": cli_cmd,
                 "entries": entries,
             }
-    except Exception as exc:
-        return {
-            "success": False,
-            "method": "Offline (Geen directe verbinding met s3://datasets.elasticmapreduce)",
-            "command": cli_cmd,
-            "error": str(exc),
-            "entries": [
-                "                           PRE chi-sim-all/",
-                "                           PRE eng-1m/",
-                "                           PRE eng-all/",
-                "                           PRE eng-fiction-all/",
-                "                           PRE eng-gb-all/",
-                "                           PRE eng-us-all/",
-                "                           PRE fre-all/",
-                "                           PRE ger-all/",
-                "                           PRE heb-all/",
-                "                           PRE rus-all/",
-                "                           PRE spa-all/",
-            ],
-        }
+    except Exception:
+        pass
 
-    return {"success": False, "method": "Fallback S3 Overzicht", "command": cli_cmd, "entries": []}
+    # Methode 2: AWS CLI fallback als direct HTTPS niet bereikbaar is
+    if shutil.which("aws") is not None:
+        try:
+            proc = subprocess.run(
+                ["aws", "s3", "ls", "--no-sign-request", s3_uri],
+                capture_output=True,
+                text=True,
+                timeout=4,
+                check=False,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                lines = [line.strip() for line in proc.stdout.strip().splitlines() if line.strip()]
+                return {
+                    "success": True,
+                    "method": "AWS CLI (`aws s3 ls --no-sign-request`)",
+                    "command": cli_cmd,
+                    "entries": lines,
+                }
+        except Exception:
+            pass
+
+    return {
+        "success": False,
+        "method": "Offline (Geen directe verbinding met s3://datasets.elasticmapreduce)",
+        "command": cli_cmd,
+        "entries": [
+            "                           PRE chi-sim-all/",
+            "                           PRE eng-1m/",
+            "                           PRE eng-all/",
+            "                           PRE eng-fiction-all/",
+            "                           PRE eng-gb-all/",
+            "                           PRE eng-us-all/",
+            "                           PRE fre-all/",
+            "                           PRE ger-all/",
+            "                           PRE heb-all/",
+            "                           PRE rus-all/",
+            "                           PRE spa-all/",
+        ],
+    }
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_live_ngram_from_google(
-    terms: Tuple[str, ...],
+@st.cache_data(ttl=86400, max_entries=2000, show_spinner=False)
+def fetch_single_ngram_series(
+    term: str,
     pos_code: str,
     case_sensitive: bool,
-    regions: Tuple[str, ...],
-    start_year: int = 1800,
-    end_year: int = 2026,
+    region: str,
 ) -> Optional[pd.DataFrame]:
-    """Haalt live echte Ngram-tijdreeksen op voor elk willekeurig woord via Google API."""
+    """
+    Haalt de volledige tijdreeks (1800-2019) op voor één enkel ngram en één corpus.
+    Wordt afzonderlijk in-memory gecached voor maximale herbruikbaarheid.
+    Extrapoleert tot 2026 zodat tijdselecties in de UI 100% in-memory en direct zijn.
+    """
+    t = term.strip()
+    if not t:
+        return None
+
+    corpus_id = CORPUS_MAPPING.get(region, {}).get("google_corpus_id", "en-US-2019")
+    if pos_code in ("_NOUN", "_VERB", "_INF"):
+        q_str = f"{t}{pos_code}"
+    elif pos_code == "_ADJ_SIM":
+        q_str = f"{t}_ADJ"
+    else:
+        q_str = t
+
+    params = {
+        "content": q_str,
+        "year_start": "1800",
+        "year_end": "2019",
+        "corpus": corpus_id,
+        "smoothing": "0",
+    }
+    if not case_sensitive:
+        params["case_insensitive"] = "true"
+
+    url = f"https://books.google.com/ngrams/json?{urllib.parse.urlencode(params)}"
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) NgramVisualBuilder/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return None
+
+    if not payload:
+        return None
+
     records: List[Dict[str, Any]] = []
-    api_end_year = min(end_year, 2019)
-
-    for region in regions:
-        corpus_id = CORPUS_MAPPING.get(region, {}).get("google_corpus_id", "en-US-2019")
-        query_items = []
-        for t in terms:
-            if not t.strip():
-                continue
-            if pos_code in ("_NOUN", "_VERB", "_INF"):
-                q_str = f"{t}{pos_code}"
-            elif pos_code == "_ADJ_SIM":
-                q_str = f"{t}_ADJ"
-            else:
-                q_str = t
-            query_items.append(q_str)
-
-        if not query_items:
+    for item in payload:
+        if not case_sensitive and item.get("type") == "EXPANSION":
             continue
 
-        params = {
-            "content": ",".join(query_items),
-            "year_start": str(start_year),
-            "year_end": str(api_end_year),
-            "corpus": corpus_id,
-            "smoothing": "0",
-        }
-        if not case_sensitive:
-            params["case_insensitive"] = "true"
+        timeseries = item.get("timeseries", [])
+        if not timeseries:
+            continue
 
-        url = f"https://books.google.com/ngrams/json?{urllib.parse.urlencode(params)}"
-        try:
-            req = urllib.request.Request(
-                url,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) NgramVisualBuilder/1.0"},
+        raw_ngram_name = item.get("ngram", "")
+        clean_name = raw_ngram_name.replace(" (All)", "")
+        for suffix in ["_NOUN", "_VERB", "_INF", "_ADJ"]:
+            if clean_name.endswith(suffix):
+                clean_name = clean_name[: -len(suffix)]
+
+        years_list = list(range(1800, 2020))
+        for idx, yr in enumerate(years_list):
+            if idx >= len(timeseries):
+                break
+            rel_freq_pct = float(timeseries[idx]) * 100.0
+            t_norm = (yr - 1800) / 226.0
+            est_total_books = int(120_000 * np.exp(3.6 * t_norm))
+            est_raw_matches = max(0, int(round((rel_freq_pct / 100.0) * est_total_books)))
+
+            records.append(
+                {
+                    "year": yr,
+                    "ngram": clean_name,
+                    "pos_tag": pos_code if pos_code != "_ADJ_SIM" else "_NOUN",
+                    "case_sensitive": bool(case_sensitive),
+                    "corpus_region": region,
+                    "raw_match_count": est_raw_matches,
+                    "total_books_in_corpus": est_total_books,
+                    "relative_frequency": rel_freq_pct,
+                    "historical_event": HISTORICAL_EVENTS_LOOKUP.get(yr, None),
+                }
             )
-            with urllib.request.urlopen(req, timeout=6) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except Exception:
-            continue
 
-        if not payload:
-            continue
-
-        for item in payload:
-            if not case_sensitive and item.get("type") == "EXPANSION":
-                continue
-
-            timeseries = item.get("timeseries", [])
-            if not timeseries:
-                continue
-
-            raw_ngram_name = item.get("ngram", "")
-            clean_name = raw_ngram_name.replace(" (All)", "")
-            for suffix in ["_NOUN", "_VERB", "_INF", "_ADJ"]:
-                if clean_name.endswith(suffix):
-                    clean_name = clean_name[: -len(suffix)]
-
-            years_list = list(range(start_year, api_end_year + 1))
-            for idx, yr in enumerate(years_list):
-                if idx >= len(timeseries):
-                    break
-                rel_freq_pct = float(timeseries[idx]) * 100.0
+        # Extrapolatie 2020-2026 voor actuele visualisatie
+        if timeseries:
+            last_val_pct = float(timeseries[-1]) * 100.0
+            for yr in range(2020, 2027):
                 t_norm = (yr - 1800) / 226.0
                 est_total_books = int(120_000 * np.exp(3.6 * t_norm))
-                est_raw_matches = max(0, int(round((rel_freq_pct / 100.0) * est_total_books)))
-
+                est_raw_matches = max(0, int(round((last_val_pct / 100.0) * est_total_books)))
                 records.append(
                     {
                         "year": yr,
@@ -522,34 +580,42 @@ def fetch_live_ngram_from_google(
                         "corpus_region": region,
                         "raw_match_count": est_raw_matches,
                         "total_books_in_corpus": est_total_books,
-                        "relative_frequency": rel_freq_pct,
+                        "relative_frequency": last_val_pct,
                         "historical_event": HISTORICAL_EVENTS_LOOKUP.get(yr, None),
                     }
                 )
 
-            if end_year > api_end_year and timeseries:
-                last_val_pct = float(timeseries[-1]) * 100.0
-                for yr in range(api_end_year + 1, end_year + 1):
-                    t_norm = (yr - 1800) / 226.0
-                    est_total_books = int(120_000 * np.exp(3.6 * t_norm))
-                    est_raw_matches = max(0, int(round((last_val_pct / 100.0) * est_total_books)))
-                    records.append(
-                        {
-                            "year": yr,
-                            "ngram": clean_name,
-                            "pos_tag": pos_code if pos_code != "_ADJ_SIM" else "_NOUN",
-                            "case_sensitive": bool(case_sensitive),
-                            "corpus_region": region,
-                            "raw_match_count": est_raw_matches,
-                            "total_books_in_corpus": est_total_books,
-                            "relative_frequency": last_val_pct,
-                            "historical_event": HISTORICAL_EVENTS_LOOKUP.get(yr, None),
-                        }
-                    )
-
     if not records:
         return None
     return pd.DataFrame(records)
+
+
+def fetch_live_ngram_from_google(
+    terms: Tuple[str, ...],
+    pos_code: str,
+    case_sensitive: bool,
+    regions: Tuple[str, ...],
+    start_year: int = 1800,
+    end_year: int = 2026,
+) -> Optional[pd.DataFrame]:
+    """Combineert en filtert tijdreeksen voor alle gevraagde termen en corpora uit de in-memory cache."""
+    dfs: List[pd.DataFrame] = []
+    for region in regions:
+        for t in terms:
+            if not t.strip():
+                continue
+            df_item = fetch_single_ngram_series(t.strip(), pos_code, case_sensitive, region)
+            if df_item is not None and not df_item.empty:
+                dfs.append(df_item)
+
+    if not dfs:
+        return None
+
+    full_df = pd.concat(dfs, ignore_index=True)
+    filtered_df = full_df[(full_df["year"] >= start_year) & (full_df["year"] <= end_year)].copy()
+    if filtered_df.empty:
+        return None
+    return filtered_df
 
 
 # ==============================================================================
@@ -830,50 +896,34 @@ def main() -> None:
     st.markdown(GOOGLE_NGRAM_CSS, unsafe_allow_html=True)
 
     available_regions = list(CORPUS_MAPPING.keys())
-    profiles_data = load_user_profiles()
+    profiles_data = get_user_profiles()
 
     if "current_profile" not in st.session_state:
         st.session_state["current_profile"] = profiles_data.get("active_profile", "Lucas (Onderzoeker)")
+        if st.session_state["current_profile"] not in profiles_data.get("profiles", {}):
+            st.session_state["current_profile"] = list(profiles_data.get("profiles", {}).keys())[0]
+        apply_profile_to_session_state(st.session_state["current_profile"])
 
     active_user = st.session_state["current_profile"]
-    if active_user not in profiles_data["profiles"]:
-        active_user = list(profiles_data["profiles"].keys())[0]
+    if active_user not in profiles_data.get("profiles", {}):
+        active_user = list(profiles_data.get("profiles", {}).keys())[0]
         st.session_state["current_profile"] = active_user
+        apply_profile_to_session_state(active_user)
 
     user_prefs = profiles_data["profiles"][active_user]["preferences"]
 
     if "search_query" not in st.session_state:
         st.session_state["search_query"] = "climate, democracy, telegram"
-    if "year_range" not in st.session_state:
-        st.session_state["year_range"] = tuple(user_prefs.get("year_range", [1800, 2026]))
-    if "smoothing_val" not in st.session_state:
-        st.session_state["smoothing_val"] = user_prefs.get("smoothing", 3)
-    if "selected_regions" not in st.session_state:
-        st.session_state["selected_regions"] = user_prefs.get("regions", ["American English"])
     if "selected_pos_label" not in st.session_state:
         st.session_state["selected_pos_label"] = "Alle woordsoorten"
     if "case_sensitive_val" not in st.session_state:
         st.session_state["case_sensitive_val"] = False
-    if "chart_type" not in st.session_state:
-        st.session_state["chart_type"] = user_prefs.get("chart_type", "Lijngrafiek")
-    if "palette" not in st.session_state:
-        st.session_state["palette"] = user_prefs.get("palette", "Google Kleuren")
-    if "y_scale" not in st.session_state:
-        st.session_state["y_scale"] = user_prefs.get("y_scale", "Lineair")
-    if "y_metric" not in st.session_state:
-        st.session_state["y_metric"] = user_prefs.get("y_metric", "Relatieve frequentie (%)")
-    if "interpolation" not in st.session_state:
-        st.session_state["interpolation"] = user_prefs.get("interpolation", "monotone")
-    if "show_raw" not in st.session_state:
-        st.session_state["show_raw"] = user_prefs.get("show_raw", True)
-    if "show_events" not in st.session_state:
-        st.session_state["show_events"] = user_prefs.get("show_events", True)
-    if "show_points" not in st.session_state:
-        st.session_state["show_points"] = user_prefs.get("show_points", False)
-    if "stroke_width" not in st.session_state:
-        st.session_state["stroke_width"] = user_prefs.get("stroke_width", 2)
-    if "cross_lang_mode" not in st.session_state:
-        st.session_state["cross_lang_mode"] = user_prefs.get("cross_lang_mode", False)
+
+    def on_head_prof_change() -> None:
+        new_prof = st.session_state["head_prof_select"]
+        st.session_state["current_profile"] = new_prof
+        st.session_state["acc_prof_sel"] = new_prof
+        apply_profile_to_session_state(new_prof)
 
     # --------------------------------------------------------------------------
     # 1. HEADER MET GOOGLE LOGO & ACCOUNT STATUS
@@ -893,16 +943,15 @@ def main() -> None:
         p_col1, p_col2 = st.columns([2.5, 1.0])
         with p_col1:
             all_profs = list(profiles_data["profiles"].keys())
-            c_prof = st.selectbox(
+            prof_idx = all_profs.index(active_user) if active_user in all_profs else 0
+            st.selectbox(
                 "Profiel",
                 options=all_profs,
-                index=all_profs.index(active_user),
+                index=prof_idx,
                 key="head_prof_select",
                 label_visibility="collapsed",
+                on_change=on_head_prof_change,
             )
-            if c_prof != active_user:
-                st.session_state["current_profile"] = c_prof
-                st.rerun()
         with p_col2:
             with st.popover("Account", icon="👤"):
                 st.write(f"Ingelogd als: **{active_user}**")
@@ -1031,7 +1080,6 @@ def main() -> None:
                 y_metric_choice = st.radio(
                     "Y-as Metriek",
                     options=["Relatieve frequentie (%)", "Absolute aantallen"],
-                    index=0 if st.session_state["y_metric"] == "Relatieve frequentie (%)" else 1,
                     horizontal=True,
                     key="y_metric_sel",
                     help="Kies tussen genormaliseerde relatieve frequentie (%) of geschatte absolute aantallen boekvermeldingen.",
@@ -1041,9 +1089,6 @@ def main() -> None:
                 chart_type = st.selectbox(
                     "Vorm van de grafiek",
                     options=["Lijngrafiek", "Vlakgrafiek", "Staafgrafiek", "Trapgrafiek"],
-                    index=["Lijngrafiek", "Vlakgrafiek", "Staafgrafiek", "Trapgrafiek"].index(
-                        st.session_state["chart_type"]
-                    ),
                     key="chart_type_sel",
                 )
                 st.session_state["chart_type"] = chart_type
@@ -1051,7 +1096,6 @@ def main() -> None:
                 palette_choice = st.selectbox(
                     "Kleurenpalet",
                     options=list(PALETTES_MAP.keys()),
-                    index=list(PALETTES_MAP.keys()).index(st.session_state["palette"]),
                     key="palette_choice_sel",
                 )
                 st.session_state["palette"] = palette_choice
@@ -1059,7 +1103,6 @@ def main() -> None:
                 y_scale_choice = st.radio(
                     "Y-as schaal",
                     options=["Lineair", "Logaritmisch"],
-                    index=["Lineair", "Logaritmisch"].index(st.session_state["y_scale"]),
                     horizontal=True,
                     key="yscale_sel",
                 )
@@ -1068,20 +1111,19 @@ def main() -> None:
                 interp_choice = st.selectbox(
                     "Lijncurve (Interpolatie)",
                     options=["monotone", "linear", "basis"],
-                    index=["monotone", "linear", "basis"].index(st.session_state["interpolation"]),
                     key="interp_sel",
                 )
                 st.session_state["interpolation"] = interp_choice
 
-                stroke_w = st.slider("Lijndikte (px)", 1, 6, st.session_state["stroke_width"], key="sw_sel")
+                stroke_w = st.slider("Lijndikte (px)", 1, 6, key="sw_sel")
                 st.session_state["stroke_width"] = stroke_w
 
                 st.divider()
-                s_raw = st.checkbox("Toon ruwe data op achtergrond", value=st.session_state["show_raw"], key="sr_cb")
+                s_raw = st.checkbox("Toon ruwe data op achtergrond", key="sr_cb")
                 st.session_state["show_raw"] = s_raw
-                s_ev = st.checkbox("Toon historische annotatielijnen", value=st.session_state["show_events"], key="se_cb")
+                s_ev = st.checkbox("Toon historische annotatielijnen", key="se_cb")
                 st.session_state["show_events"] = s_ev
-                s_pt = st.checkbox("Toon datapunten op lijn", value=st.session_state["show_points"], key="sp_cb")
+                s_pt = st.checkbox("Toon datapunten op lijn", key="sp_cb")
                 st.session_state["show_points"] = s_pt
 
         with p_col7:
@@ -1181,17 +1223,30 @@ def main() -> None:
 
         filtered_df.sort_values(by=["series_label", "year"], inplace=True)
 
-        # Voeg zoekopdracht toe aan account geschiedenis
-        add_search_to_history(
-            profile_name=active_user,
-            query=user_query,
-            regions=selected_regions,
-            pos_tag=selected_pos_code,
-            case_sensitive=case_sensitive,
-            year_range=year_range,
-            smoothing=smoothing_window,
-            cross_lang=st.session_state["cross_lang_mode"],
+        # Voeg zoekopdracht ALLEEN toe aan geschiedenis wanneer termen of filters daadwerkelijk veranderen
+        search_fingerprint = (
+            active_user,
+            user_query.strip(),
+            tuple(sorted(selected_regions)),
+            selected_pos_code,
+            case_sensitive,
         )
+        if (
+            st.session_state.get("last_recorded_search") != search_fingerprint
+            and user_query.strip()
+            and valid_search_terms
+        ):
+            st.session_state["last_recorded_search"] = search_fingerprint
+            add_search_to_history(
+                profile_name=active_user,
+                query=user_query,
+                regions=selected_regions,
+                pos_tag=selected_pos_code,
+                case_sensitive=case_sensitive,
+                year_range=year_range,
+                smoothing=smoothing_window,
+                cross_lang=st.session_state["cross_lang_mode"],
+            )
 
         # Smoothing berekenen voor zowel frequentie als absolute aantallen
         window_size = max(1, smoothing_window * 2 + 1) if smoothing_window > 0 else 1
@@ -1639,24 +1694,35 @@ def main() -> None:
         with acc_c1:
             st.subheader("1. Profielbeheer")
             all_profs = list(profiles_data["profiles"].keys())
-            c_idx = all_profs.index(active_user)
-            chosen_profile = st.selectbox("Actief profiel:", options=all_profs, index=c_idx, key="acc_prof_sel")
-            if chosen_profile != active_user:
-                st.session_state["current_profile"] = chosen_profile
-                st.rerun()
+            c_idx = all_profs.index(active_user) if active_user in all_profs else 0
+
+            def on_acc_prof_change() -> None:
+                new_prof = st.session_state["acc_prof_sel"]
+                st.session_state["current_profile"] = new_prof
+                st.session_state["head_prof_select"] = new_prof
+                apply_profile_to_session_state(new_prof)
+
+            st.selectbox(
+                "Actief profiel:",
+                options=all_profs,
+                index=c_idx,
+                key="acc_prof_sel",
+                on_change=on_acc_prof_change,
+            )
 
             with st.popover("Nieuw Profiel Aanmaken"):
                 new_p_name = st.text_input("Naam van nieuw profiel:")
                 if st.button("Profiel Opslaan"):
                     if new_p_name and new_p_name not in profiles_data["profiles"]:
                         profiles_data["profiles"][new_p_name] = {
-                            "preferences": user_prefs,
+                            "preferences": dict(user_prefs),
                             "history": [],
                             "favorites": [],
                         }
                         profiles_data["active_profile"] = new_p_name
                         save_user_profiles(profiles_data)
                         st.session_state["current_profile"] = new_p_name
+                        apply_profile_to_session_state(new_p_name)
                         st.success(f"Profiel '{new_p_name}' aangemaakt!")
                         st.rerun()
 
@@ -1690,12 +1756,7 @@ def main() -> None:
                     st.success("Standaardvoorkeuren bijgewerkt!")
             with reset_pref_col:
                 if st.button("Herstel Standaardwaarden"):
-                    prefs = profiles_data["profiles"][active_user]["preferences"]
-                    st.session_state["selected_regions"] = prefs.get("regions", ["American English"])
-                    st.session_state["chart_type"] = prefs.get("chart_type", "Lijngrafiek")
-                    st.session_state["y_metric"] = prefs.get("y_metric", "Relatieve frequentie (%)")
-                    st.session_state["smoothing_val"] = prefs.get("smoothing", 3)
-                    st.session_state["year_range"] = tuple(prefs.get("year_range", [1800, 2026]))
+                    apply_profile_to_session_state(active_user)
                     st.success("Standaardwaarden hersteld!")
                     st.rerun()
 

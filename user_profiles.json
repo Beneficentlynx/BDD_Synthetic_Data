@@ -25,6 +25,41 @@
       "history": [
         {
           "query": "climate",
+          "timestamp": "2026-11-18 12:12",
+          "regions": [
+            "American English",
+            "British English",
+            "Dutch",
+            "European Fiction"
+          ],
+          "pos_tag": "NONE",
+          "case_sensitive": false,
+          "year_range": [
+            1800,
+            2026
+          ],
+          "smoothing": 0,
+          "cross_lang": false
+        },
+        {
+          "query": "climate",
+          "timestamp": "2026-11-18 12:08",
+          "regions": [
+            "American English",
+            "British English",
+            "Dutch"
+          ],
+          "pos_tag": "NONE",
+          "case_sensitive": false,
+          "year_range": [
+            1800,
+            2026
+          ],
+          "smoothing": 0,
+          "cross_lang": false
+        },
+        {
+          "query": "climate",
           "timestamp": "2026-11-18 11:56",
           "regions": [
             "Dutch"
@@ -44,21 +79,6 @@
           "regions": [
             "Dutch",
             "American English"
-          ],
-          "pos_tag": "NONE",
-          "case_sensitive": false,
-          "year_range": [
-            1800,
-            2026
-          ],
-          "smoothing": 3,
-          "cross_lang": false
-        },
-        {
-          "query": "climate",
-          "timestamp": "2026-11-18 11:54",
-          "regions": [
-            "Dutch"
           ],
           "pos_tag": "NONE",
           "case_sensitive": false,
@@ -145,21 +165,6 @@
           ],
           "smoothing": 3,
           "cross_lang": true
-        },
-        {
-          "query": "climate",
-          "timestamp": "2026-11-15 17:30",
-          "regions": [
-            "American English",
-            "Dutch"
-          ],
-          "pos_tag": "NONE",
-          "case_sensitive": false,
-          "year_range": [
-            1800,
-            2026
-          ],
-          "smoothing": 3
         },
         {
           "query": "democracy",
@@ -283,7 +288,93 @@
         "stroke_width": 3,
         "cross_lang_mode": false
       },
-      "history": [],
+      "history": [
+        {
+          "query": "climate",
+          "timestamp": "2026-11-18 12:19",
+          "regions": [
+            "American English",
+            "British English",
+            "Dutch",
+            "European Fiction"
+          ],
+          "pos_tag": "NONE",
+          "case_sensitive": false,
+          "year_range": [
+            1800,
+            2026
+          ],
+          "smoothing": 0,
+          "cross_lang": false
+        },
+        {
+          "query": "climate",
+          "timestamp": "2026-11-18 12:07",
+          "regions": [
+            "American English",
+            "British English",
+            "Dutch"
+          ],
+          "pos_tag": "NONE",
+          "case_sensitive": false,
+          "year_range": [
+            1800,
+            2026
+          ],
+          "smoothing": 3,
+          "cross_lang": false
+        },
+        {
+          "query": "climate",
+          "timestamp": "2026-11-18 12:07",
+          "regions": [
+            "American English",
+            "British English",
+            "European Fiction",
+            "Dutch"
+          ],
+          "pos_tag": "NONE",
+          "case_sensitive": false,
+          "year_range": [
+            1800,
+            2026
+          ],
+          "smoothing": 3,
+          "cross_lang": false
+        },
+        {
+          "query": "climate",
+          "timestamp": "2026-11-18 12:07",
+          "regions": [
+            "American English",
+            "Dutch"
+          ],
+          "pos_tag": "NONE",
+          "case_sensitive": false,
+          "year_range": [
+            1800,
+            2026
+          ],
+          "smoothing": 3,
+          "cross_lang": false
+        },
+        {
+          "query": "climate, democracy, telegram",
+          "timestamp": "2026-11-18 12:06",
+          "regions": [
+            "American English",
+            "Dutch"
+          ],
+          "pos_tag": "NONE",
+          "case_sensitive": false,
+          "year_range": [
+            1800,
+            2026
+          ],
+          "smoothing": 3,
+          "cross_lang": false
+        }
+      ],
       "favorites": []
     }
   }
