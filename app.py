@@ -1,18 +1,17 @@
 """
 ================================================================================
-INTERACTIEF STREAMLIT PROTOTYPE: GOOGLE BOOKS NGRAM VIEWER (VISUAL BUILDER 2.0)
+INTERACTIEF STREAMLIT PROTOTYPE: GOOGLE BOOKS NGRAM VIEWER (LIVE NGRAM & AWS S3)
 ================================================================================
 Bestand : app.py
 Stijl   : Authentieke Google Books Ngram Viewer look-and-feel (Material Design),
-          verrijkt met 6 proof-of-concept verbeteringen:
+          volledig aangedreven door de échte Google Books Ngram Database & AWS S3 Open Data:
           1. Korte info popup bij de instellingen
           2. Algemene info / kennisbank opgedeeld in concrete secties
           3. Uitgebreide tabel met bijzonderheden (pieken, dalen, startjaar, trends)
-          4. Flexibiliteit in grafiekvormgeving (vlak/lijn/staaf/trap, paletten,
-             log-schaal, ruwe achtergronddata) én snelle tijdselectie-presets
+          4. Flexibiliteit in grafiekvormgeving (vlak/lijn/staaf/trap, paletten, log-schaal)
           5. Cross-Language support (meertalig zoeken en vergelijken van concepten)
           6. Gebruikersaccounts voor zoekgeschiedenis, favorieten en standaardvoorkeuren
-          + Integratie met AWS S3 Open Data & Live Google Ngram Database
+          + Integratie met AWS S3 Open Data & Live Google Books API
 ================================================================================
 """
 
@@ -36,13 +35,12 @@ import streamlit as st
 # PAGINA-CONFIGURATIE
 # ==============================================================================
 st.set_page_config(
-    page_title="Google Books Ngram Viewer — Visual Builder 2.0",
+    page_title="Google Books Ngram Viewer — Visual Builder",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
-DATA_FILE = Path(__file__).parent / "synthetic_ngram_data.csv"
 USER_PROFILES_FILE = Path(__file__).parent / "user_profiles.json"
 
 # Authentieke Google Ngram Viewer lijnkleuren & paletten
@@ -242,7 +240,6 @@ GOOGLE_NGRAM_CSS = """
         margin-top: 8px;
         margin-bottom: 18px;
     }
-    /* Tab styling */
     button[data-baseweb="tab"] {
         font-size: 14px !important;
         font-weight: 500 !important;
@@ -461,6 +458,8 @@ def fetch_live_ngram_from_google(
         corpus_id = CORPUS_MAPPING.get(region, {}).get("google_corpus_id", "en-US-2019")
         query_items = []
         for t in terms:
+            if not t.strip():
+                continue
             if pos_code in ("_NOUN", "_VERB", "_INF"):
                 q_str = f"{t}{pos_code}"
             elif pos_code == "_ADJ_SIM":
@@ -468,6 +467,9 @@ def fetch_live_ngram_from_google(
             else:
                 q_str = t
             query_items.append(q_str)
+
+        if not query_items:
+            continue
 
         params = {
             "content": ",".join(query_items),
@@ -488,7 +490,7 @@ def fetch_live_ngram_from_google(
             with urllib.request.urlopen(req, timeout=6) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except Exception:
-            return None
+            continue
 
         if not payload:
             continue
@@ -556,17 +558,6 @@ def fetch_live_ngram_from_google(
 
 
 # ==============================================================================
-# DATA INLADEN (SYNTHETISCHE DATASET)
-# ==============================================================================
-@st.cache_data
-def load_ngram_data(csv_path: Path) -> pd.DataFrame:
-    """Laadt de synthetische Ngram-dataset in."""
-    df = pd.read_csv(csv_path)
-    df["historical_event"] = df["historical_event"].where(df["historical_event"].notna(), None)
-    return df
-
-
-# ==============================================================================
 # CONSTRUCTIEVE FOUTAFHANDELING & FEEDFORWARD
 # ==============================================================================
 KNOWN_TYPOS_AND_SYNTAX: Dict[str, Tuple[str, str]] = {
@@ -580,53 +571,28 @@ KNOWN_TYPOS_AND_SYNTAX: Dict[str, Tuple[str, str]] = {
 }
 
 
-def validate_single_term(
-    raw_term: str,
-    available_terms: List[str],
-    case_sensitive: bool,
-) -> Dict[str, Optional[str]]:
+def validate_single_term(raw_term: str, case_sensitive: bool) -> Dict[str, Optional[str]]:
     """Valideert een zoekterm en genereert constructieve feedforward suggesties."""
     cleaned = raw_term.strip()
+    if not cleaned:
+        return {"is_valid": False, "input_term": "", "matched_term": None, "suggestion": "climate", "reason": "Zoekveld is leeg."}
 
     # Check 1: Oude POS-operator syntax
     for legacy_tag in ["_NOUN", "_VERB", "_INF", "_ADJ", "_ADV"]:
         if cleaned.upper().endswith(legacy_tag):
             base_word = cleaned[: -len(legacy_tag)].strip()
-            matched_suggestion = base_word if base_word in available_terms else (base_word or "climate")
             return {
                 "is_valid": False,
                 "input_term": cleaned,
                 "matched_term": None,
-                "suggestion": matched_suggestion,
+                "suggestion": base_word or "climate",
                 "reason": (
                     f"Je typte de oude programmeersyntax `{legacy_tag}` in de zoekbalk. "
-                    f"Gebruik de visuele **Woordsoort**-knop in de filterbalk en zoek op **'{matched_suggestion}'**."
+                    f"Gebruik de visuele **Woordsoort**-knop in de filterbalk en zoek op **'{base_word}'**."
                 ),
             }
 
-    # Check 2: Match in dataset
-    if case_sensitive:
-        if cleaned in available_terms:
-            return {"is_valid": True, "input_term": cleaned, "matched_term": cleaned, "suggestion": None, "reason": None}
-        lower_map = {t.lower(): t for t in available_terms}
-        if cleaned.lower() in lower_map:
-            alt_case = lower_map[cleaned.lower()]
-            return {
-                "is_valid": False,
-                "input_term": cleaned,
-                "matched_term": None,
-                "suggestion": alt_case,
-                "reason": (
-                    f"Hoofdlettergevoeligheid staat aan en `{cleaned}` verschilt in "
-                    f"hoofdlettergebruik van **'{alt_case}'**."
-                ),
-            }
-    else:
-        for term in available_terms:
-            if term.lower() == cleaned.lower():
-                return {"is_valid": True, "input_term": cleaned, "matched_term": term, "suggestion": None, "reason": None}
-
-    # Check 3: Bekende typfouten
+    # Check 2: Bekende typfouten
     lookup = cleaned.lower()
     if lookup in KNOWN_TYPOS_AND_SYNTAX:
         suggested_word, explanation = KNOWN_TYPOS_AND_SYNTAX[lookup]
@@ -638,34 +604,13 @@ def validate_single_term(
             "reason": explanation,
         }
 
-    # Check 4: Fuzzy matching
-    close_matches = difflib.get_close_matches(
-        lookup,
-        [t.lower() for t in available_terms],
-        n=1,
-        cutoff=0.55,
-    )
-    if close_matches:
-        best_lower = close_matches[0]
-        best_term = next(t for t in available_terms if t.lower() == best_lower)
-        return {
-            "is_valid": False,
-            "input_term": cleaned,
-            "matched_term": None,
-            "suggestion": best_term,
-            "reason": f"Geen exact resultaat gevonden voor `{cleaned}`, maar deze term lijkt er sterk op.",
-        }
-
+    # Elk woord kan direct live opgezocht worden in Google Books!
     return {
-        "is_valid": False,
+        "is_valid": True,
         "input_term": cleaned,
-        "matched_term": None,
-        "suggestion": "climate",
-        "reason": (
-            f"De term `{cleaned}` zit niet in de lokale synthetische CSV. "
-            f"Schakel in de filterbalk **Databron** over naar **Live Ngram + AWS S3** om elk willekeurig "
-            f"woord op te vragen, of kies een testterm ({', '.join(f'**{t}**' for t in available_terms[:6])})."
-        ),
+        "matched_term": cleaned,
+        "suggestion": None,
+        "reason": None,
     }
 
 
@@ -792,7 +737,7 @@ def render_google_placeholder_chart(year_range: Tuple[int, int]) -> alt.Chart:
                 {
                     "year": [(year_range[0] + year_range[1]) / 2],
                     "relative_frequency": [0.00007],
-                    "text": ["Kies hierboven een voorgestelde zoekterm om de trendlijn te tonen"],
+                    "text": ["Typ een zoekterm hierboven om de live trendlijn te laden"],
                 }
             )
         )
@@ -816,18 +761,9 @@ def render_google_placeholder_chart(year_range: Tuple[int, int]) -> alt.Chart:
 def main() -> None:
     st.markdown(GOOGLE_NGRAM_CSS, unsafe_allow_html=True)
 
-    if not DATA_FILE.exists():
-        st.error(f"Bestand `{DATA_FILE.name}` niet gevonden! Voer eerst `python generate_synthetic_ngram_data.py` uit.")
-        st.stop()
-
-    synthetic_df = load_ngram_data(DATA_FILE)
-    available_ngrams: List[str] = sorted(
-        synthetic_df["ngram"].unique().tolist(), key=lambda s: (s.lower(), s)
-    )
-    available_regions: List[str] = synthetic_df["corpus_region"].unique().tolist()
+    available_regions = list(CORPUS_MAPPING.keys())
     profiles_data = load_user_profiles()
 
-    # Initialiseer profiel & voorkeuren (Verbetering 6)
     if "current_profile" not in st.session_state:
         st.session_state["current_profile"] = profiles_data.get("active_profile", "Lucas (Onderzoeker)")
 
@@ -850,8 +786,6 @@ def main() -> None:
         st.session_state["selected_pos_label"] = "Alle woordsoorten"
     if "case_sensitive_val" not in st.session_state:
         st.session_state["case_sensitive_val"] = False
-    if "data_source_mode" not in st.session_state:
-        st.session_state["data_source_mode"] = "Hybride (Synthetisch + Live Ngram / AWS S3)"
     if "chart_type" not in st.session_state:
         st.session_state["chart_type"] = user_prefs.get("chart_type", "Lijngrafiek")
     if "palette" not in st.session_state:
@@ -880,7 +814,7 @@ def main() -> None:
             """
             <div class="ngram-header">
                 <span class="g-blue">G</span><span class="g-red">o</span><span class="g-yellow">o</span><span class="g-blue">g</span><span class="g-green">l</span><span class="g-red">e</span>
-                <span class="ngram-title-text">Books Ngram Viewer — Visual Builder 2.0</span>
+                <span class="ngram-title-text">Books Ngram Viewer — Visual Builder</span>
             </div>
             """,
             unsafe_allow_html=True,
@@ -904,7 +838,7 @@ def main() -> None:
                 st.write(f"Ingelogd als: **{active_user}**")
                 st.caption(f"Zoekgeschiedenis: {len(profiles_data['profiles'][active_user].get('history', []))} items")
                 st.caption(f"Favorieten: {len(profiles_data['profiles'][active_user].get('favorites', []))} items")
-                st.info("Ga naar het tabblad **'👤 Account & Geschiedenis'** voor alle profielopties.")
+                st.info("Ga naar het tabblad **'👤 Account & Geschiedenis'** voor alle opties.")
 
     # ==========================================================================
     # HOOFDNAVIGATIE TABS (VERBETERING 2: STRUCTURELE CONCRETE INDELING)
@@ -923,7 +857,6 @@ def main() -> None:
     # TAB 1: VISUAL BUILDER (DE HOOFDAPPLICATIE)
     # ==========================================================================
     with tab_visual:
-        # Zoekbalk & Meertalige Toggle
         search_col, cross_col = st.columns([4.2, 1.0])
         with search_col:
             user_query = st.text_input(
@@ -965,12 +898,11 @@ def main() -> None:
         case_pill_label = "Case-Sensitive" if st.session_state["case_sensitive_val"] else "Case-Insensitive"
         smoothing_pill_label = f"Smoothing ({st.session_state['smoothing_val']})"
 
-        # Filter Pills layout
-        p_col1, p_col2, p_col3, p_col4, p_col5, p_col6, p_col7, p_col8 = st.columns(
-            [1.0, 1.25, 1.2, 1.15, 1.35, 1.45, 1.2, 1.4]
+        # 7 Filter Pills
+        p_col1, p_col2, p_col3, p_col4, p_col5, p_col6, p_col7 = st.columns(
+            [1.0, 1.3, 1.25, 1.2, 1.4, 1.25, 1.35]
         )
 
-        # PILL 1: Tijdlijn-slider
         with p_col1:
             with st.popover(f"{yr_start} - {yr_end}", use_container_width=True):
                 st.markdown("**📅 Tijdsperiode selecteren**")
@@ -983,7 +915,6 @@ def main() -> None:
                     help="Versleep de schuifregelaar om in te zoomen op specifieke jaartallen tussen 1800 en 2026.",
                 )
 
-        # PILL 2: Geografisch Corpus
         with p_col2:
             with st.popover(region_pill_label, use_container_width=True):
                 st.markdown("**🌍 Corpus & Geografische Regio**")
@@ -994,7 +925,6 @@ def main() -> None:
                     help="Kies corpora om taal- en cultuurverschillen te vergelijken.",
                 )
 
-        # PILL 3: Hoofdlettergevoeligheid
         with p_col3:
             with st.popover(case_pill_label, use_container_width=True):
                 st.markdown("**🔤 Hoofdlettergevoeligheid**")
@@ -1004,7 +934,6 @@ def main() -> None:
                     help="Aan: strikt onderscheid tussen bijv. 'Paris' en 'paris'. Uit: combineert alle schrijfwijzen.",
                 )
 
-        # PILL 4: Smoothing Slider
         with p_col4:
             with st.popover(smoothing_pill_label, use_container_width=True):
                 st.markdown("**🌊 Trend-afvlakking (Smoothing)**")
@@ -1017,7 +946,6 @@ def main() -> None:
                     help="0 = ruwe data; 5-15 = gebalanceerd; 25-50 = macro-trend.",
                 )
 
-        # PILL 5: Woordsoort-selector
         with p_col5:
             pos_short = "Woordsoort: Alle" if current_pos_code == "NONE" else f"Tag: {current_pos_code}"
             with st.popover(pos_short, use_container_width=True):
@@ -1030,27 +958,7 @@ def main() -> None:
                 )
                 selected_pos_code = pos_options_map[selected_pos_label]
 
-        # PILL 6: Databron (Hybride / S3 / Synthetisch)
         with p_col6:
-            mode_short = (
-                "Bron: Synthetisch"
-                if st.session_state["data_source_mode"].startswith("Alleen Synthetisch")
-                else "Bron: S3 / Live + CSV"
-            )
-            with st.popover(mode_short, use_container_width=True):
-                st.markdown("**☁️ Ngram Database & AWS S3 Koppeling**")
-                data_source_mode = st.radio(
-                    label="Kies databron:",
-                    options=[
-                        "Hybride (Synthetisch + Live Ngram / AWS S3)",
-                        "Live Google Ngram Database (Online / S3)",
-                        "Alleen Synthetische CSV (Test-modus)",
-                    ],
-                    key="data_source_mode",
-                )
-
-        # PILL 7: Grafiek-Vormgeving (Verbetering 4)
-        with p_col7:
             with st.popover("🎨 Vormgeving", use_container_width=True):
                 st.markdown("**🎨 Grafiek-Vormgeving & Stijl**")
                 chart_type = st.selectbox(
@@ -1099,18 +1007,16 @@ def main() -> None:
                 s_pt = st.checkbox("Toon datapunten op lijn", value=st.session_state["show_points"], key="sp_cb")
                 st.session_state["show_points"] = s_pt
 
-        # PILL 8: Korte Info Popup bij de Instellingen (Verbetering 1)
-        with p_col8:
+        with p_col7:
             with st.popover("ℹ️ Hulp & Uitleg", use_container_width=True):
                 st.markdown(
                     """
                     ### 💡 Hulp bij Instellingen & Filters
                     * **📅 Tijdsperiode:** In- en uitzoomen tussen 1800 en 2026.
-                    * **🌍 Corpus:** Normalisatie per taalgebied (voorkomt bias door publicatievolume).
+                    * **🌍 Corpus:** Normalisatie per taalgebied uit de officiële Google Books index.
                     * **🔤 Hoofdlettergevoelig:** Onderscheid tussen bijv. 'Paris' (stad) en 'paris'.
                     * **🌊 Smoothing:** Berekent een moving average om jaarlijkse ruis glad te strijken.
                     * **🏷️ Woordsoort:** Filtert op zelfstandig naamwoord, werkwoord of infinitief.
-                    * **☁️ Databron:** Schakel tussen synthetische testdata en live Google Books / S3 queries.
                     * **🎨 Vormgeving:** Pas grafiektype (vlak/lijn/staaf/trap) en kleurenpalet aan.
                     """
                 )
@@ -1118,7 +1024,7 @@ def main() -> None:
         st.markdown('<div class="ngram-filter-divider"></div>', unsafe_allow_html=True)
 
         # ----------------------------------------------------------------------
-        # VALIDATIE & DATA OPHALEN
+        # VALIDATIE & LIVE GOOGLE NGRAM OPHALEN
         # ----------------------------------------------------------------------
         raw_terms = [t.strip() for t in user_query.split(",") if t.strip()]
         if not raw_terms:
@@ -1129,7 +1035,6 @@ def main() -> None:
             st.altair_chart(render_google_placeholder_chart(year_range), use_container_width=True)
             st.stop()
 
-        # Als Cross-Language actief is, vul querytermen aan met vertalingen (Verbetering 5)
         augmented_terms = list(raw_terms)
         if st.session_state["cross_lang_mode"]:
             for t in raw_terms:
@@ -1142,31 +1047,10 @@ def main() -> None:
                     if nl_t and nl_t not in augmented_terms:
                         augmented_terms.append(nl_t)
 
-        validations = [
-            validate_single_term(t, available_ngrams, case_sensitive) for t in augmented_terms
-        ]
+        validations = [validate_single_term(t, case_sensitive) for t in augmented_terms]
 
-        known_error_items = []
-        unknown_but_fetchable_terms = []
-        valid_synthetic_terms = []
-
-        for v in validations:
-            if v["is_valid"]:
-                if v["matched_term"] not in valid_synthetic_terms:
-                    valid_synthetic_terms.append(v["matched_term"])
-            else:
-                inp_lower = (v["input_term"] or "").lower()
-                has_legacy_tag = any(
-                    (v["input_term"] or "").upper().endswith(tag)
-                    for tag in ["_NOUN", "_VERB", "_INF", "_ADJ", "_ADV"]
-                )
-                is_close_typo = bool(
-                    difflib.get_close_matches(inp_lower, [t.lower() for t in available_ngrams], n=1, cutoff=0.68)
-                )
-                if inp_lower in KNOWN_TYPOS_AND_SYNTAX or has_legacy_tag or is_close_typo:
-                    known_error_items.append(v)
-                else:
-                    unknown_but_fetchable_terms.append(v)
+        known_error_items = [v for v in validations if not v["is_valid"]]
+        valid_search_terms = [v["matched_term"] for v in validations if v["is_valid"] and v["matched_term"]]
 
         if known_error_items:
             for bad in known_error_items:
@@ -1187,77 +1071,30 @@ def main() -> None:
                     st.session_state["search_query"] = corrected_query_str
                     st.rerun()
 
-        frames_to_combine: List[pd.DataFrame] = []
-        actual_pos_tag = "_NOUN" if selected_pos_code == "_ADJ_SIM" else selected_pos_code
-
-        if data_source_mode == "Live Google Ngram Database (Online / S3)":
-            live_candidates = [
-                v["input_term"] for v in validations if v not in known_error_items and v["input_term"]
-            ]
-            if live_candidates:
-                with st.spinner("Bezig met ophalen uit de Google Books Ngram Database..."):
-                    live_df = fetch_live_ngram_from_google(
-                        terms=tuple(live_candidates),
-                        pos_code=selected_pos_code,
-                        case_sensitive=case_sensitive,
-                        regions=tuple(selected_regions),
-                        start_year=1800,
-                        end_year=2026,
-                    )
-                if live_df is not None and not live_df.empty:
-                    frames_to_combine.append(live_df)
-        else:
-            if valid_synthetic_terms:
-                syn_part = synthetic_df[
-                    (synthetic_df["ngram"].isin(valid_synthetic_terms))
-                    & (synthetic_df["pos_tag"] == actual_pos_tag)
-                    & (synthetic_df["case_sensitive"] == case_sensitive)
-                    & (synthetic_df["corpus_region"].isin(selected_regions))
-                ].copy()
-                if selected_pos_code == "_ADJ_SIM":
-                    syn_part["relative_frequency"] = (syn_part["relative_frequency"] * 0.42).round(6)
-                    syn_part["raw_match_count"] = (syn_part["raw_match_count"] * 0.42).round().astype(int)
-                frames_to_combine.append(syn_part)
-
-            if data_source_mode.startswith("Hybride") and unknown_but_fetchable_terms:
-                fetch_terms = [v["input_term"] for v in unknown_but_fetchable_terms if v["input_term"]]
-                if fetch_terms:
-                    with st.spinner(f"Zoekterm(en) {', '.join(fetch_terms)} live opvragen bij Google Books..."):
-                        live_df = fetch_live_ngram_from_google(
-                            terms=tuple(fetch_terms),
-                            pos_code=selected_pos_code,
-                            case_sensitive=case_sensitive,
-                            regions=tuple(selected_regions),
-                            start_year=1800,
-                            end_year=2026,
-                        )
-                    if live_df is not None and not live_df.empty:
-                        frames_to_combine.append(live_df)
-                    else:
-                        for un in unknown_but_fetchable_terms:
-                            st.warning(
-                                f"💡 **Geen resultaten voor `{un['input_term']}`** — {un['reason']}  \n"
-                                f"Bedoelde je misschien **`{un['suggestion']}`**?"
-                            )
-            elif data_source_mode.startswith("Alleen Synthetisch") and unknown_but_fetchable_terms:
-                for un in unknown_but_fetchable_terms:
-                    st.warning(
-                        f"💡 **Geen exacte resultaten voor `{un['input_term']}`** — {un['reason']}  \n"
-                        f"Bedoelde je misschien **`{un['suggestion']}`**?"
-                    )
-
-        if not frames_to_combine:
+        if not valid_search_terms:
             st.altair_chart(render_google_placeholder_chart(year_range), use_container_width=True)
             st.stop()
 
-        combined_df = pd.concat(frames_to_combine, ignore_index=True)
-        filtered_df = combined_df[
-            (combined_df["year"] >= year_range[0]) & (combined_df["year"] <= year_range[1])
-        ].copy()
+        with st.spinner("Bezig met live ophalen uit de Google Books Ngram Database..."):
+            live_df = fetch_live_ngram_from_google(
+                terms=tuple(valid_search_terms),
+                pos_code=selected_pos_code,
+                case_sensitive=case_sensitive,
+                regions=tuple(selected_regions),
+                start_year=year_range[0],
+                end_year=year_range[1],
+            )
 
-        if filtered_df.empty:
+        if live_df is None or live_df.empty:
+            st.warning(
+                f"Geen data gevonden in de Google Books Ngram Database voor `{', '.join(valid_search_terms)}` "
+                f"binnen de geselecteerde corpora ({', '.join(selected_regions)}). "
+                "Probeer een andere term of spelling."
+            )
             st.altair_chart(render_google_placeholder_chart(year_range), use_container_width=True)
             st.stop()
+
+        filtered_df = live_df.copy()
 
         # Label per lijn
         if len(selected_regions) == 1 and not st.session_state["cross_lang_mode"]:
@@ -1357,7 +1194,7 @@ def main() -> None:
             alt.Tooltip("series_label:N", title="Term / Corpus"),
             alt.Tooltip("smoothed_frequency:Q", title="Frequentie (Smoothed %)", format=".6f"),
             alt.Tooltip("relative_frequency:Q", title="Frequentie (Ruw %)", format=".6f"),
-            alt.Tooltip("raw_match_count:Q", title="Absolute treffers", format=","),
+            alt.Tooltip("raw_match_count:Q", title="Geschatte treffers", format=","),
             alt.Tooltip("total_books_in_corpus:Q", title="Boeken in corpus", format=","),
             alt.Tooltip("historical_event:N", title="Historische gebeurtenis"),
         ]
@@ -1454,14 +1291,12 @@ def main() -> None:
 
         chart_layers = [main_mark, direct_labels]
 
-        # Ruwe achtergrond data lijn bij smoothing > 0 (Verbetering 4)
         if st.session_state["show_raw"] and smoothing_window > 0:
             raw_background = base_chart.mark_line(
                 strokeWidth=1.0, opacity=0.22, strokeDash=[3, 3]
             ).encode(y=alt.Y("relative_frequency:Q", scale=y_scale_conf))
             chart_layers.insert(0, raw_background)
 
-        # Historische gebeurtenissen marker-lijnen
         events_in_view = (
             filtered_df[filtered_df["historical_event"].notna()][["year", "historical_event"]]
             .drop_duplicates(subset=["year"])
@@ -1497,11 +1332,10 @@ def main() -> None:
             unsafe_allow_html=True,
         )
 
-        # Snel Acties & KPI metrics
         kpi_col1, kpi_col2, kpi_col3, fav_save_col = st.columns([1.5, 1.5, 1.5, 1.5])
         with kpi_col1:
             tot_raw = int(filtered_df["raw_match_count"].sum())
-            st.metric("Totale Treffers", f"{tot_raw:,}".replace(",", "."))
+            st.metric("Totale Treffers (geschat)", f"{tot_raw:,}".replace(",", "."))
         with kpi_col2:
             pk_row = filtered_df.loc[filtered_df["relative_frequency"].idxmax()]
             st.metric("Piekjaar", f"{int(pk_row['year'])}", delta=f"{pk_row['relative_frequency']:.5f}%")
@@ -1527,14 +1361,12 @@ def main() -> None:
                 save_user_profiles(profiles_data)
                 st.success("Opgeslagen als favoriet!")
 
-        # ----------------------------------------------------------------------
-        # BEKNOPTE BIJZONDERHEDEN TABEL (VERBETERING 3 IN HOOFDVIEW)
-        # ----------------------------------------------------------------------
+        # Beknopte bijzonderheden tabel
         with st.expander("🔍 Bekijk beknopte tabel met grafiek-bijzonderheden (pieken, dalen, startjaar)", expanded=True):
             pec_df = analyze_chart_peculiarities(filtered_df, group_col="series_label")
             st.dataframe(pec_df, use_container_width=True, hide_index=True)
 
-        # Historische context onder de grafiek
+        # Historische context
         st.markdown("##### Historische context in deze tijdsperiode (`historical_event`)")
         if events_in_view.empty:
             st.info(f"Geen gemarkeerde historische gebeurtenissen tussen {year_range[0]} en {year_range[1]}.")
@@ -1553,9 +1385,7 @@ def main() -> None:
                         f"{int(top_match['raw_match_count']):,} treffers)"
                     )
 
-        # ----------------------------------------------------------------------
-        # AWS S3 OPEN DATA BROWSER
-        # ----------------------------------------------------------------------
+        # AWS S3 Explorer
         with st.expander("☁️ AWS S3 Google Books Ngram Database Explorer (`s3://datasets.elasticmapreduce/ngrams/books/`)"):
             st.markdown(
                 "Hieronder wordt rechtstreeks de publieke **Google Books Ngrams S3-bucket** op AWS Open Data "
@@ -1591,7 +1421,7 @@ def main() -> None:
         st.header("🔍 Diepte-Analyse: Grafiek-Bijzonderheden, Pieken & Dalen")
         st.markdown(
             """
-            Deze tabel analyseert automatisch de wiskundige eigenschappen van elke actieve curve:
+            Deze tabel analyseert automatisch de wiskundige eigenschappen van elke actieve curve uit de Google Books database:
             wanneer de term voor het eerst opkwam, waar het absolute hoogtepunt ligt, wat het diepste dal was,
             en welke historische gebeurtenissen samenvallen met piekjaren.
             """
@@ -1618,7 +1448,7 @@ def main() -> None:
                     mean_f = yr_df["relative_frequency"].mean()
                     total_m = yr_df["raw_match_count"].sum()
                     with pec_ev_cols[i % 2]:
-                        st.info(f"📅 **{desc}**\n\n* Gemiddelde frequentie in {yr}: **{mean_f:.5f}%**\n* Absolute vermeldingen: **{total_m:,}**")
+                        st.info(f"📅 **{desc}**\n\n* Gemiddelde frequentie in {yr}: **{mean_f:.5f}%**\n* Geschatte vermeldingen: **{total_m:,}**")
         else:
             st.info("Voer eerst een geldige zoekopdracht uit in het tabblad 'Visual Builder'.")
 
@@ -1626,11 +1456,12 @@ def main() -> None:
     # TAB 3: MEERTALIG ZOEKEN (CROSS-LANGUAGE - VERBETERING 5)
     # ==========================================================================
     with tab_cross_lang:
-        st.header("🌐 Cross-Language Zoeken & Vergelijken")
+        st.header("🌐 Cross-Language Zoeken & Vergelijken (Live Google Books)")
         st.markdown(
             """
             In klassieke Ngram viewers ben je gebonden aan één taal. Met **Cross-Language Support**
             worden concepten over taal- en landsgrenzen gekoppeld (bijv. het Engelse *climate* versus het Nederlandse *klimaat*).
+            Data wordt rechtstreeks opgehaald uit de respectievelijke taalcorpora van Google Books.
             """
         )
 
@@ -1657,7 +1488,7 @@ def main() -> None:
                 **Gekoppelde Vertalingen:**
                 * 🇬🇧 Engels: `{mapping.get('en')}`
                 * 🇳🇱 Nederlands: `{mapping.get('nl')}`
-                * 🇫🇷 Frans (gesimuleerd): `{mapping.get('fr')}`
+                * 🇫🇷 Frans: `{mapping.get('fr')}`
                 """
             )
 
@@ -1671,24 +1502,26 @@ def main() -> None:
             en_term = mapping.get("en")
             nl_term = mapping.get("nl")
 
-            df_en = synthetic_df[
-                (synthetic_df["ngram"] == en_term)
-                & (synthetic_df["corpus_region"].isin(["American English", "British English"]))
-                & (synthetic_df["pos_tag"] == "NONE")
-                & (~synthetic_df["case_sensitive"])
-            ].copy()
-            df_en["Taal & Corpus"] = f"{en_term} [Engels - American/British]"
+            with st.spinner("Live Google Books data ophalen voor vergelijking..."):
+                df_en = fetch_live_ngram_from_google(
+                    (en_term,), "NONE", False, ("American English", "British English"), 1800, 2026
+                )
+                df_nl = fetch_live_ngram_from_google(
+                    (nl_term,), "NONE", False, ("Dutch",), 1800, 2026
+                )
 
-            df_nl = synthetic_df[
-                (synthetic_df["ngram"] == nl_term)
-                & (synthetic_df["corpus_region"] == "Dutch")
-                & (synthetic_df["pos_tag"] == "NONE")
-                & (~synthetic_df["case_sensitive"])
-            ].copy()
-            df_nl["Taal & Corpus"] = f"{nl_term} [Nederlands - Dutch Corpus]"
+            cross_frames = []
+            if df_en is not None and not df_en.empty:
+                df_en_copy = df_en.copy()
+                df_en_copy["Taal & Corpus"] = f"{en_term} [Engels - American/British]"
+                cross_frames.append(df_en_copy)
+            if df_nl is not None and not df_nl.empty:
+                df_nl_copy = df_nl.copy()
+                df_nl_copy["Taal & Corpus"] = f"{nl_term} [Nederlands - Dutch]"
+                cross_frames.append(df_nl_copy)
 
-            combined_cross = pd.concat([df_en, df_nl], ignore_index=True)
-            if not combined_cross.empty:
+            if cross_frames:
+                combined_cross = pd.concat(cross_frames, ignore_index=True)
                 combined_cross["smoothed_frequency"] = combined_cross.groupby("Taal & Corpus")[
                     "relative_frequency"
                 ].transform(lambda s: s.rolling(window=5, min_periods=1, center=True).mean())
@@ -1704,8 +1537,8 @@ def main() -> None:
                             alt.Tooltip("year:Q", title="Jaar"),
                             alt.Tooltip("ngram:N", title="Woord"),
                             alt.Tooltip("Taal & Corpus:N", title="Corpus"),
-                            alt.Tooltip("smoothed_frequency:Q", title="Frequentie (%)", format=".4f"),
-                            alt.Tooltip("raw_match_count:Q", title="Treffers", format=","),
+                            alt.Tooltip("smoothed_frequency:Q", title="Frequentie (%)", format=".5f"),
+                            alt.Tooltip("raw_match_count:Q", title="Geschatte treffers", format=","),
                         ],
                     )
                     .properties(height=350)
@@ -1790,10 +1623,9 @@ def main() -> None:
                     """
                     De ruwe dataset bevindt zich op `s3://datasets.elasticmapreduce/ngrams/books/`:
                     * Bevat honderden gecomprimeerde Hadoop SequenceFiles en shards.
-                    * Het prototype gebruikt een **drie-laags architectuur**:
+                    * Het prototype gebruikt een **twee-laags architectuur**:
                       1. *S3 Bucket Explorer* om de bestandsstructuur op AWS Open Data inzichtelijk te maken.
-                      2. *Live Ngram API* om elk willekeurig woord binnen milliseconden op te vragen.
-                      3. *Synthetische dataset* voor deterministische validatietests.
+                      2. *Live Ngram API* om elk willekeurig woord binnen milliseconden op te vragen uit de Google Books index.
                     """
                 )
 

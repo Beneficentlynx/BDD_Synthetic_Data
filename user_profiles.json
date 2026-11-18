@@ -25,6 +25,67 @@
       "history": [
         {
           "query": "climate",
+          "timestamp": "2026-11-18 11:54",
+          "regions": [
+            "Dutch"
+          ],
+          "pos_tag": "NONE",
+          "case_sensitive": false,
+          "year_range": [
+            1800,
+            2026
+          ],
+          "smoothing": 3,
+          "cross_lang": false
+        },
+        {
+          "query": "peter pan",
+          "timestamp": "2026-11-18 11:48",
+          "regions": [
+            "Dutch"
+          ],
+          "pos_tag": "NONE",
+          "case_sensitive": false,
+          "year_range": [
+            1800,
+            2026
+          ],
+          "smoothing": 3,
+          "cross_lang": false
+        },
+        {
+          "query": "climate, democracy, telegram",
+          "timestamp": "2026-11-18 11:47",
+          "regions": [
+            "Dutch"
+          ],
+          "pos_tag": "NONE",
+          "case_sensitive": false,
+          "year_range": [
+            1800,
+            2026
+          ],
+          "smoothing": 3,
+          "cross_lang": false
+        },
+        {
+          "query": "climate, democracy, telegram",
+          "timestamp": "2026-11-18 11:43",
+          "regions": [
+            "American English",
+            "Dutch"
+          ],
+          "pos_tag": "NONE",
+          "case_sensitive": false,
+          "year_range": [
+            1800,
+            2026
+          ],
+          "smoothing": 3,
+          "cross_lang": false
+        },
+        {
+          "query": "climate",
           "timestamp": "2026-11-15 18:47",
           "regions": [
             "American English",
