@@ -4,14 +4,7 @@ INTERACTIEF STREAMLIT PROTOTYPE: GOOGLE BOOKS NGRAM VIEWER (LIVE NGRAM & AWS S3)
 ================================================================================
 Bestand : app.py
 Stijl   : Authentieke Google Books Ngram Viewer look-and-feel (Material Design),
-          volledig aangedreven door de échte Google Books Ngram Database & AWS S3 Open Data:
-          1. Korte info popup bij de instellingen
-          2. Algemene info / kennisbank opgedeeld in concrete secties
-          3. Uitgebreide tabel met bijzonderheden (pieken, dalen, startjaar, trends)
-          4. Flexibiliteit in grafiekvormgeving (vlak/lijn/staaf/trap, paletten, log-schaal)
-          5. Cross-Language support (meertalig zoeken en vergelijken van concepten)
-          6. Gebruikersaccounts voor zoekgeschiedenis, favorieten en standaardvoorkeuren
-          + Integratie met AWS S3 Open Data & Live Google Books API
+          volledig aangedreven door de échte Google Books Ngram Database & AWS S3 Open Data.
 ================================================================================
 """
 
@@ -100,7 +93,7 @@ HISTORICAL_EVENTS_LOOKUP: Dict[int, str] = {
     2023: "2023: Doorbraak Generatieve AI & Large Language Models",
 }
 
-# Cross-Language Mapping (Verbetering 5)
+# Cross-Language Mapping (Meertalige conceptkoppeling)
 CROSS_LANGUAGE_MAPPINGS: Dict[str, Dict[str, str]] = {
     "climate": {"en": "climate", "nl": "klimaat", "fr": "climat", "label": "Klimaat / Climate"},
     "klimaat": {"en": "climate", "nl": "klimaat", "fr": "climat", "label": "Klimaat / Climate"},
@@ -126,7 +119,7 @@ CROSS_LANGUAGE_MAPPINGS: Dict[str, Dict[str, str]] = {
 }
 
 # ==============================================================================
-# CSS STYLING (AUTHENTIEKE GOOGLE MATERIAL LOOK)
+# CSS STYLING (GOOGLE MATERIAL LOOK)
 # ==============================================================================
 GOOGLE_NGRAM_CSS = """
 <style>
@@ -254,7 +247,7 @@ GOOGLE_NGRAM_CSS = """
 
 
 # ==============================================================================
-# GEBRUIKERSACCOUNTS, GESCHIEDENIS & VOORKEUREN (VERBETERING 6)
+# GEBRUIKERSACCOUNTS, GESCHIEDENIS & VOORKEUREN
 # ==============================================================================
 def load_user_profiles() -> Dict[str, Any]:
     """Laadt gebruikersprofielen, geschiedenis en voorkeuren uit JSON."""
@@ -275,6 +268,7 @@ def load_user_profiles() -> Dict[str, Any]:
                     "interpolation": "monotone",
                     "palette": "Google Kleuren",
                     "y_scale": "Lineair",
+                    "y_metric": "Relatieve frequentie (%)",
                     "smoothing": 3,
                     "year_range": [1800, 2026],
                     "show_raw": True,
@@ -293,6 +287,7 @@ def load_user_profiles() -> Dict[str, Any]:
                     "interpolation": "monotone",
                     "palette": "Google Kleuren",
                     "y_scale": "Lineair",
+                    "y_metric": "Relatieve frequentie (%)",
                     "smoothing": 3,
                     "year_range": [1800, 2026],
                     "show_raw": True,
@@ -604,7 +599,6 @@ def validate_single_term(raw_term: str, case_sensitive: bool) -> Dict[str, Optio
             "reason": explanation,
         }
 
-    # Elk woord kan direct live opgezocht worden in Google Books!
     return {
         "is_valid": True,
         "input_term": cleaned,
@@ -615,7 +609,7 @@ def validate_single_term(raw_term: str, case_sensitive: bool) -> Dict[str, Optio
 
 
 # ==============================================================================
-# ANALYSE VAN GRAFIEK-BIJZONDERHEDEN (VERBETERING 3)
+# ANALYSE VAN GRAFIEK-BIJZONDERHEDEN
 # ==============================================================================
 def analyze_chart_peculiarities(df_filtered: pd.DataFrame, group_col: str = "series_label") -> pd.DataFrame:
     """
@@ -634,7 +628,7 @@ def analyze_chart_peculiarities(df_filtered: pd.DataFrame, group_col: str = "ser
         if group.empty:
             continue
 
-        first_significant_row = group[group["relative_frequency"] > 0.0001]
+        first_significant_row = group[group["relative_frequency"] > 0.00001]
         start_year = int(first_significant_row["year"].iloc[0]) if not first_significant_row.empty else int(group["year"].min())
 
         peak_idx = group["relative_frequency"].idxmax()
@@ -681,6 +675,80 @@ def analyze_chart_peculiarities(df_filtered: pd.DataFrame, group_col: str = "ser
         )
 
     return pd.DataFrame(results)
+
+
+# ==============================================================================
+# HISTORISCHE CONTEXT FILTERING (~2 JAAR VOOR/NA PIEK OF DAL)
+# ==============================================================================
+def get_applicable_historical_events(
+    df: pd.DataFrame,
+    window_years: int = 2,
+) -> pd.DataFrame:
+    """
+    Filtert historische gebeurtenissen zodat uitsluitend events worden getoond
+    die binnen ~2 jaar voor of na een piek of dal in de actieve data vallen.
+    """
+    if df.empty:
+        return pd.DataFrame(columns=["year", "historical_event", "context_type", "inflection_year", "series_label"])
+
+    inflection_points: List[Tuple[int, str, str]] = []
+
+    for series_name, grp in df.groupby("series_label"):
+        grp = grp.sort_values("year").reset_index(drop=True)
+        if len(grp) < 3:
+            continue
+
+        y_vals = grp["smoothed_frequency"].values
+        yrs = grp["year"].values
+
+        # Globale piek
+        max_idx = int(np.argmax(y_vals))
+        inflection_points.append((int(yrs[max_idx]), "piek", str(series_name)))
+
+        # Globale dal
+        min_idx = int(np.argmin(y_vals))
+        inflection_points.append((int(yrs[min_idx]), "dal", str(series_name)))
+
+        # Lokale pieken en dalen
+        y_span = float(np.ptp(y_vals))
+        prominence = y_span * 0.08 if y_span > 0 else 0.0
+
+        for i in range(1, len(y_vals) - 1):
+            if y_vals[i] > y_vals[i - 1] and y_vals[i] > y_vals[i + 1]:
+                local_min = min(y_vals[max(0, i - 4) : min(len(y_vals), i + 5)])
+                if (y_vals[i] - local_min) >= prominence:
+                    inflection_points.append((int(yrs[i]), "piek", str(series_name)))
+            elif y_vals[i] < y_vals[i - 1] and y_vals[i] < y_vals[i + 1]:
+                local_max = max(y_vals[max(0, i - 4) : min(len(y_vals), i + 5)])
+                if (local_max - y_vals[i]) >= prominence:
+                    inflection_points.append((int(yrs[i]), "dal", str(series_name)))
+
+    if not inflection_points:
+        return pd.DataFrame(columns=["year", "historical_event", "context_type", "inflection_year", "series_label"])
+
+    events_in_df = (
+        df[df["historical_event"].notna()][["year", "historical_event"]]
+        .drop_duplicates(subset=["year"])
+        .sort_values("year")
+    )
+
+    applicable_rows = []
+    for _, ev_row in events_in_df.iterrows():
+        ev_yr = int(ev_row["year"])
+        matching_pts = [pt for pt in inflection_points if abs(ev_yr - pt[0]) <= window_years]
+        if matching_pts:
+            closest_pt = min(matching_pts, key=lambda pt: abs(ev_yr - pt[0]))
+            applicable_rows.append(
+                {
+                    "year": ev_yr,
+                    "historical_event": ev_row["historical_event"],
+                    "context_type": closest_pt[1],
+                    "inflection_year": closest_pt[0],
+                    "series_label": closest_pt[2],
+                }
+            )
+
+    return pd.DataFrame(applicable_rows)
 
 
 # ==============================================================================
@@ -792,6 +860,8 @@ def main() -> None:
         st.session_state["palette"] = user_prefs.get("palette", "Google Kleuren")
     if "y_scale" not in st.session_state:
         st.session_state["y_scale"] = user_prefs.get("y_scale", "Lineair")
+    if "y_metric" not in st.session_state:
+        st.session_state["y_metric"] = user_prefs.get("y_metric", "Relatieve frequentie (%)")
     if "interpolation" not in st.session_state:
         st.session_state["interpolation"] = user_prefs.get("interpolation", "monotone")
     if "show_raw" not in st.session_state:
@@ -806,7 +876,7 @@ def main() -> None:
         st.session_state["cross_lang_mode"] = user_prefs.get("cross_lang_mode", False)
 
     # --------------------------------------------------------------------------
-    # 1. HEADER MET GOOGLE LOGO & ACCOUNT WISSELAAR
+    # 1. HEADER MET GOOGLE LOGO & ACCOUNT STATUS
     # --------------------------------------------------------------------------
     header_left, header_right = st.columns([3.8, 1.2])
     with header_left:
@@ -814,7 +884,7 @@ def main() -> None:
             """
             <div class="ngram-header">
                 <span class="g-blue">G</span><span class="g-red">o</span><span class="g-yellow">o</span><span class="g-blue">g</span><span class="g-green">l</span><span class="g-red">e</span>
-                <span class="ngram-title-text">Books Ngram Viewer — Visual Builder</span>
+                <span class="ngram-title-text">Books Ngram Viewer</span>
             </div>
             """,
             unsafe_allow_html=True,
@@ -824,7 +894,7 @@ def main() -> None:
         with p_col1:
             all_profs = list(profiles_data["profiles"].keys())
             c_prof = st.selectbox(
-                "👤 Profiel",
+                "Profiel",
                 options=all_profs,
                 index=all_profs.index(active_user),
                 key="head_prof_select",
@@ -834,29 +904,26 @@ def main() -> None:
                 st.session_state["current_profile"] = c_prof
                 st.rerun()
         with p_col2:
-            with st.popover("⚙️ Account", icon="👤"):
+            with st.popover("Account", icon="👤"):
                 st.write(f"Ingelogd als: **{active_user}**")
                 st.caption(f"Zoekgeschiedenis: {len(profiles_data['profiles'][active_user].get('history', []))} items")
                 st.caption(f"Favorieten: {len(profiles_data['profiles'][active_user].get('favorites', []))} items")
-                st.info("Ga naar het tabblad **'👤 Account & Geschiedenis'** voor alle opties.")
 
     # ==========================================================================
-    # HOOFDNAVIGATIE TABS (VERBETERING 2: STRUCTURELE CONCRETE INDELING)
+    # KORTE EN INFORMATIEVE TABS ZONDER EMOJI
     # ==========================================================================
-    tab_visual, tab_peculiarities, tab_cross_lang, tab_documentation, tab_account = st.tabs(
+    tab_viewer, tab_documentation, tab_account = st.tabs(
         [
-            "📊 Visual Builder (Grafiek & Zoeken)",
-            "🔍 Grafiek-Bijzonderheden (Pieken & Dalen)",
-            "🌐 Meertalig Zoeken (Cross-Language)",
-            "📖 Kennisbank & Documentatie",
-            "👤 Account, Geschiedenis & Instellingen",
+            "Ngram Viewer",
+            "Documentatie",
+            "Account",
         ]
     )
 
     # ==========================================================================
-    # TAB 1: VISUAL BUILDER (DE HOOFDAPPLICATIE)
+    # TAB 1: NGRAM VIEWER
     # ==========================================================================
-    with tab_visual:
+    with tab_viewer:
         search_col, cross_col = st.columns([4.2, 1.0])
         with search_col:
             user_query = st.text_input(
@@ -867,14 +934,14 @@ def main() -> None:
             )
         with cross_col:
             cross_lang_toggle = st.checkbox(
-                "🌐 Cross-Language",
+                "Meertalig zoeken",
                 value=st.session_state["cross_lang_mode"],
                 help="Koppelt automatisch vertalingen tussen Engels en Nederlands (bijv. climate <-> klimaat).",
             )
             st.session_state["cross_lang_mode"] = cross_lang_toggle
 
         # ----------------------------------------------------------------------
-        # FILTER-PILLS BALK DIRECT ONDER DE ZOEKBALK (MET VERBETERING 1 & 4)
+        # FILTER-PILLS BALK DIRECT ONDER DE ZOEKBALK
         # ----------------------------------------------------------------------
         pos_options_map = {
             "Alle woordsoorten": "NONE",
@@ -898,14 +965,13 @@ def main() -> None:
         case_pill_label = "Case-Sensitive" if st.session_state["case_sensitive_val"] else "Case-Insensitive"
         smoothing_pill_label = f"Smoothing ({st.session_state['smoothing_val']})"
 
-        # 7 Filter Pills
         p_col1, p_col2, p_col3, p_col4, p_col5, p_col6, p_col7 = st.columns(
-            [1.0, 1.3, 1.25, 1.2, 1.4, 1.25, 1.35]
+            [1.0, 1.3, 1.25, 1.2, 1.4, 1.35, 1.3]
         )
 
         with p_col1:
             with st.popover(f"{yr_start} - {yr_end}", use_container_width=True):
-                st.markdown("**📅 Tijdsperiode selecteren**")
+                st.markdown("**Tijdsperiode selecteren**")
                 year_range: Tuple[int, int] = st.slider(
                     label="Jaartallen (`year`)",
                     min_value=1800,
@@ -917,7 +983,7 @@ def main() -> None:
 
         with p_col2:
             with st.popover(region_pill_label, use_container_width=True):
-                st.markdown("**🌍 Corpus & Geografische Regio**")
+                st.markdown("**Corpus & Geografische Regio**")
                 selected_regions = st.multiselect(
                     label="Selecteer corpora (`corpus_region`)",
                     options=available_regions,
@@ -927,7 +993,7 @@ def main() -> None:
 
         with p_col3:
             with st.popover(case_pill_label, use_container_width=True):
-                st.markdown("**🔤 Hoofdlettergevoeligheid**")
+                st.markdown("**Hoofdlettergevoeligheid**")
                 case_sensitive = st.checkbox(
                     label="Hoofdlettergevoelig (`Case-Sensitive`)",
                     key="case_sensitive_val",
@@ -936,7 +1002,7 @@ def main() -> None:
 
         with p_col4:
             with st.popover(smoothing_pill_label, use_container_width=True):
-                st.markdown("**🌊 Trend-afvlakking (Smoothing)**")
+                st.markdown("**Trend-afvlakking (Smoothing)**")
                 smoothing_window: int = st.slider(
                     label="Smoothing (voortschrijdend gemiddelde)",
                     min_value=0,
@@ -949,7 +1015,7 @@ def main() -> None:
         with p_col5:
             pos_short = "Woordsoort: Alle" if current_pos_code == "NONE" else f"Tag: {current_pos_code}"
             with st.popover(pos_short, use_container_width=True):
-                st.markdown("**🏷️ Woordsoort & Vervoeging (`pos_tag`)**")
+                st.markdown("**Woordsoort & Vervoeging (`pos_tag`)**")
                 selected_pos_label = st.selectbox(
                     label="Kies grammaticale rol",
                     options=list(pos_options_map.keys()),
@@ -959,8 +1025,19 @@ def main() -> None:
                 selected_pos_code = pos_options_map[selected_pos_label]
 
         with p_col6:
-            with st.popover("🎨 Vormgeving", use_container_width=True):
-                st.markdown("**🎨 Grafiek-Vormgeving & Stijl**")
+            with st.popover("Vormgeving", use_container_width=True):
+                st.markdown("**Grafiek-Vormgeving & Schaal**")
+
+                y_metric_choice = st.radio(
+                    "Y-as Metriek",
+                    options=["Relatieve frequentie (%)", "Absolute aantallen"],
+                    index=0 if st.session_state["y_metric"] == "Relatieve frequentie (%)" else 1,
+                    horizontal=True,
+                    key="y_metric_sel",
+                    help="Kies tussen genormaliseerde relatieve frequentie (%) of geschatte absolute aantallen boekvermeldingen.",
+                )
+                st.session_state["y_metric"] = y_metric_choice
+
                 chart_type = st.selectbox(
                     "Vorm van de grafiek",
                     options=["Lijngrafiek", "Vlakgrafiek", "Staafgrafiek", "Trapgrafiek"],
@@ -1008,16 +1085,16 @@ def main() -> None:
                 st.session_state["show_points"] = s_pt
 
         with p_col7:
-            with st.popover("ℹ️ Hulp & Uitleg", use_container_width=True):
+            with st.popover("Hulp & Uitleg", use_container_width=True):
                 st.markdown(
                     """
-                    ### 💡 Hulp bij Instellingen & Filters
-                    * **📅 Tijdsperiode:** In- en uitzoomen tussen 1800 en 2026.
-                    * **🌍 Corpus:** Normalisatie per taalgebied uit de officiële Google Books index.
-                    * **🔤 Hoofdlettergevoelig:** Onderscheid tussen bijv. 'Paris' (stad) en 'paris'.
-                    * **🌊 Smoothing:** Berekent een moving average om jaarlijkse ruis glad te strijken.
-                    * **🏷️ Woordsoort:** Filtert op zelfstandig naamwoord, werkwoord of infinitief.
-                    * **🎨 Vormgeving:** Pas grafiektype (vlak/lijn/staaf/trap) en kleurenpalet aan.
+                    ### Hulp bij Instellingen & Filters
+                    * **Tijdsperiode:** In- en uitzoomen tussen 1800 en 2026.
+                    * **Corpus:** Normalisatie per taalgebied uit de officiële Google Books index.
+                    * **Hoofdlettergevoelig:** Onderscheid tussen bijv. 'Paris' (stad) en 'paris'.
+                    * **Smoothing:** Berekent een moving average om jaarlijkse ruis glad te strijken.
+                    * **Woordsoort:** Filtert op zelfstandig naamwoord, werkwoord of infinitief.
+                    * **Vormgeving:** Schakel tussen relatieve frequentie (%) en absolute aantallen, of kies een ander grafiektype.
                     """
                 )
 
@@ -1056,8 +1133,8 @@ def main() -> None:
             for bad in known_error_items:
                 suggested = bad["suggestion"]
                 st.warning(
-                    f"💡 **Geen exacte resultaten voor `{bad['input_term']}`** — {bad['reason']}  \n"
-                    f"Bedoelde je misschien **`{suggested}`**?"
+                    f"Geen exacte resultaten voor `{bad['input_term']}` — {bad['reason']}  \n"
+                    f"Bedoelde je misschien: **`{suggested}`**?"
                 )
 
             corrected_terms = [
@@ -1104,7 +1181,7 @@ def main() -> None:
 
         filtered_df.sort_values(by=["series_label", "year"], inplace=True)
 
-        # Voeg zoekopdracht toe aan account geschiedenis (Verbetering 6)
+        # Voeg zoekopdracht toe aan account geschiedenis
         add_search_to_history(
             profile_name=active_user,
             query=user_query,
@@ -1116,15 +1193,23 @@ def main() -> None:
             cross_lang=st.session_state["cross_lang_mode"],
         )
 
-        # Smoothing berekenen
+        # Smoothing berekenen voor zowel frequentie als absolute aantallen
         window_size = max(1, smoothing_window * 2 + 1) if smoothing_window > 0 else 1
         filtered_df["smoothed_frequency"] = filtered_df.groupby("series_label")[
             "relative_frequency"
         ].transform(lambda s: s.rolling(window=window_size, min_periods=1, center=True).mean())
 
+        filtered_df["smoothed_raw_count"] = filtered_df.groupby("series_label")[
+            "raw_match_count"
+        ].transform(lambda s: s.rolling(window=window_size, min_periods=1, center=True).mean().round().astype(int))
+
         # ----------------------------------------------------------------------
-        # GRAFIEK RENDEREN MET VORMGEVINGSOPTIES (VERBETERING 4)
+        # GRAFIEK CONFIGURATIE (FREQUENTIE VS. ABSOLUUT, GROTERE HITBOX)
         # ----------------------------------------------------------------------
+        is_absolute = st.session_state["y_metric"] == "Absolute aantallen"
+        y_val_field = "smoothed_raw_count" if is_absolute else "smoothed_frequency"
+        y_raw_field = "raw_match_count" if is_absolute else "relative_frequency"
+
         series_order = filtered_df["series_label"].unique().tolist()
         palette_val = PALETTES_MAP.get(st.session_state["palette"], GOOGLE_LINE_COLORS)
         if isinstance(palette_val, list):
@@ -1156,15 +1241,21 @@ def main() -> None:
 
         shared_x_scale = alt.Scale(domain=[x_min, x_max], zero=False, nice=False)
 
-        max_y_val = float(filtered_df["smoothed_frequency"].max()) if not filtered_df.empty else 0.01
-        if max_y_val < 0.00005:
-            y_format = ".7f"
-        elif max_y_val < 0.0005:
-            y_format = ".6f"
-        elif max_y_val < 0.01:
-            y_format = ".5f"
+        # Y-as formattering instellen
+        if is_absolute:
+            y_format = "~s"
+            y_label_expr = "datum.label"
         else:
-            y_format = ".4f"
+            max_y_val = float(filtered_df["smoothed_frequency"].max()) if not filtered_df.empty else 0.01
+            if max_y_val < 0.00005:
+                y_format = ".7f"
+            elif max_y_val < 0.0005:
+                y_format = ".6f"
+            elif max_y_val < 0.01:
+                y_format = ".5f"
+            else:
+                y_format = ".4f"
+            y_label_expr = "datum.label + '%'"
 
         y_scale_type = "log" if st.session_state["y_scale"] == "Logaritmisch" else "linear"
         y_scale_conf = alt.Scale(type=y_scale_type) if y_scale_type == "log" else alt.Scale(zero=True)
@@ -1194,7 +1285,8 @@ def main() -> None:
             alt.Tooltip("series_label:N", title="Term / Corpus"),
             alt.Tooltip("smoothed_frequency:Q", title="Frequentie (Smoothed %)", format=".6f"),
             alt.Tooltip("relative_frequency:Q", title="Frequentie (Ruw %)", format=".6f"),
-            alt.Tooltip("raw_match_count:Q", title="Geschatte treffers", format=","),
+            alt.Tooltip("smoothed_raw_count:Q", title="Treffers (Smoothed)", format=","),
+            alt.Tooltip("raw_match_count:Q", title="Treffers (Ruw)", format=","),
             alt.Tooltip("total_books_in_corpus:Q", title="Boeken in corpus", format=","),
             alt.Tooltip("historical_event:N", title="Historische gebeurtenis"),
         ]
@@ -1202,6 +1294,7 @@ def main() -> None:
         chart_shape = st.session_state["chart_type"]
         curv = "step-after" if chart_shape == "Trapgrafiek" else st.session_state["interpolation"]
 
+        # Zichtbare datalijn
         if chart_shape in ["Lijngrafiek", "Trapgrafiek"]:
             main_mark = base_chart.mark_line(
                 strokeWidth=st.session_state["stroke_width"],
@@ -1209,12 +1302,12 @@ def main() -> None:
                 point=st.session_state["show_points"],
             ).encode(
                 y=alt.Y(
-                    "smoothed_frequency:Q",
+                    y_val_field,
                     title=None,
                     scale=y_scale_conf,
                     axis=alt.Axis(
                         format=y_format,
-                        labelExpr="datum.label + '%'",
+                        labelExpr=y_label_expr,
                         grid=True,
                         gridColor="#f1f3f4",
                         domain=False,
@@ -1233,12 +1326,12 @@ def main() -> None:
                 line={"strokeWidth": st.session_state["stroke_width"]},
             ).encode(
                 y=alt.Y(
-                    "smoothed_frequency:Q",
+                    y_val_field,
                     title=None,
                     scale=y_scale_conf,
                     axis=alt.Axis(
                         format=y_format,
-                        labelExpr="datum.label + '%'",
+                        labelExpr=y_label_expr,
                         grid=True,
                         gridColor="#f1f3f4",
                         domain=False,
@@ -1253,12 +1346,12 @@ def main() -> None:
         elif chart_shape == "Staafgrafiek":
             main_mark = base_chart.mark_bar(opacity=0.75).encode(
                 y=alt.Y(
-                    "smoothed_frequency:Q",
+                    y_val_field,
                     title=None,
                     scale=y_scale_conf,
                     axis=alt.Axis(
                         format=y_format,
-                        labelExpr="datum.label + '%'",
+                        labelExpr=y_label_expr,
                         grid=True,
                         gridColor="#f1f3f4",
                         domain=False,
@@ -1272,8 +1365,18 @@ def main() -> None:
             ).add_params(focus_selection)
         else:
             main_mark = base_chart.mark_line(strokeWidth=st.session_state["stroke_width"]).encode(
-                y=alt.Y("smoothed_frequency:Q", scale=y_scale_conf), tooltip=tooltip_config
+                y=alt.Y(y_val_field, scale=y_scale_conf), tooltip=tooltip_config
             )
+
+        # GROTERE HITBOX: onzichtbare brede lijn (strokeWidth=16) voor moeiteloze hover en klik
+        hitbox = base_chart.mark_line(
+            strokeWidth=16,
+            strokeOpacity=0.0001,
+            interpolate=curv,
+        ).encode(
+            y=alt.Y(y_val_field, scale=y_scale_conf),
+            tooltip=tooltip_config,
+        ).add_params(focus_selection)
 
         end_points_df = filtered_df[filtered_df["year"] == x_max].copy()
         direct_labels = (
@@ -1281,7 +1384,7 @@ def main() -> None:
             .mark_text(align="left", baseline="middle", dx=8, fontSize=13, fontWeight=500, clip=False)
             .encode(
                 x=alt.X("year:Q", scale=shared_x_scale),
-                y="smoothed_frequency:Q",
+                y=f"{y_val_field}:Q",
                 text="series_label:N",
                 color=alt.Color("series_label:N", scale=color_scale, legend=None),
                 opacity=alt.condition(focus_selection, alt.value(1.0), alt.value(0.25)),
@@ -1289,28 +1392,32 @@ def main() -> None:
             .add_params(focus_selection)
         )
 
-        chart_layers = [main_mark, direct_labels]
+        chart_layers = [main_mark, hitbox, direct_labels]
 
         if st.session_state["show_raw"] and smoothing_window > 0:
             raw_background = base_chart.mark_line(
                 strokeWidth=1.0, opacity=0.22, strokeDash=[3, 3]
-            ).encode(y=alt.Y("relative_frequency:Q", scale=y_scale_conf))
+            ).encode(y=alt.Y(f"{y_raw_field}:Q", scale=y_scale_conf))
             chart_layers.insert(0, raw_background)
 
-        events_in_view = (
-            filtered_df[filtered_df["historical_event"].notna()][["year", "historical_event"]]
-            .drop_duplicates(subset=["year"])
-            .sort_values("year")
+        # HISTORISCHE CONTEXT: ALLEEN ALS VAN TOEPASSING (~2 JAAR VOOR/NA PIEK OF DAL)
+        applicable_events_df = get_applicable_historical_events(
+            df=filtered_df,
+            window_years=2,
         )
-        if st.session_state["show_events"] and not events_in_view.empty:
+
+        if st.session_state["show_events"] and not applicable_events_df.empty:
             event_rules = (
-                alt.Chart(events_in_view)
-                .mark_rule(color="#dadce0", strokeDash=[3, 3], opacity=0.75)
+                alt.Chart(applicable_events_df)
+                .mark_rule(color="#dadce0", strokeDash=[3, 3], opacity=0.85)
                 .encode(
                     x=alt.X("year:Q", scale=shared_x_scale),
                     tooltip=[
                         alt.Tooltip("year:Q", title="Historisch jaar"),
                         alt.Tooltip("historical_event:N", title="Gebeurtenis"),
+                        alt.Tooltip("context_type:N", title="Relatie"),
+                        alt.Tooltip("inflection_year:Q", title="Piek/dal jaar"),
+                        alt.Tooltip("series_label:N", title="Betreffende reeks"),
                     ],
                 )
             )
@@ -1338,12 +1445,15 @@ def main() -> None:
             st.metric("Totale Treffers (geschat)", f"{tot_raw:,}".replace(",", "."))
         with kpi_col2:
             pk_row = filtered_df.loc[filtered_df["relative_frequency"].idxmax()]
-            st.metric("Piekjaar", f"{int(pk_row['year'])}", delta=f"{pk_row['relative_frequency']:.5f}%")
+            if is_absolute:
+                st.metric("Piekjaar", f"{int(pk_row['year'])}", delta=f"{int(pk_row['raw_match_count']):,} treffers")
+            else:
+                st.metric("Piekjaar", f"{int(pk_row['year'])}", delta=f"{pk_row['relative_frequency']:.5f}%")
         with kpi_col3:
             avg_b = int(filtered_df["total_books_in_corpus"].mean())
             st.metric("Gem. Boeken/Jaar", f"{avg_b:,}".replace(",", "."))
         with fav_save_col:
-            if st.button("⭐ Bewaar Zoekopdracht", help="Sla deze zoekopdracht op in je profiel-favorieten"):
+            if st.button("Bewaar Zoekopdracht", help="Sla deze zoekopdracht op in je profiel-favorieten"):
                 favs = profiles_data["profiles"][active_user].get("favorites", [])
                 favs.append(
                     {
@@ -1361,32 +1471,46 @@ def main() -> None:
                 save_user_profiles(profiles_data)
                 st.success("Opgeslagen als favoriet!")
 
-        # Beknopte bijzonderheden tabel
-        with st.expander("🔍 Bekijk beknopte tabel met grafiek-bijzonderheden (pieken, dalen, startjaar)", expanded=True):
+        # TABEL ONDER DE GRAFIEK MET GRAFIEK-BIJZONDERHEDEN
+        with st.expander("Bijzonderheden van de grafiek (pieken, dalen, startjaar en groei)", expanded=True):
             pec_df = analyze_chart_peculiarities(filtered_df, group_col="series_label")
             st.dataframe(pec_df, use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download Bijzonderheden Tabel (CSV)",
+                data=pec_df.to_csv(index=False).encode("utf-8"),
+                file_name="grafiek_bijzonderheden.csv",
+                mime="text/csv",
+            )
 
-        # Historische context
-        st.markdown("##### Historische context in deze tijdsperiode (`historical_event`)")
-        if events_in_view.empty:
-            st.info(f"Geen gemarkeerde historische gebeurtenissen tussen {year_range[0]} en {year_range[1]}.")
+        # HISTORISCHE CONTEXT: ALLEEN WANNEER VAN TOEPASSING (BINNEN ~2 JAAR VAN PIEK OF DAL)
+        st.markdown("##### Historische context bij pieken en dalen (`historical_event`)")
+        if applicable_events_df.empty:
+            st.info(
+                "Geen historische mijlpalen geregistreerd binnen ~2 jaar van de pieken of dalen in deze tijdreeks. "
+                "Historische gebeurtenissen worden uitsluitend getoond wanneer ze direct correleren met opvallende trendbreuken."
+            )
         else:
-            ev_cols = st.columns(3)
-            for idx, (_, ev_row) in enumerate(events_in_view.iterrows()):
+            ev_cols = st.columns(min(3, len(applicable_events_df)))
+            for idx, (_, ev_row) in enumerate(applicable_events_df.iterrows()):
                 yr = int(ev_row["year"])
                 desc = ev_row["historical_event"]
+                c_type = ev_row["context_type"]
+                inf_yr = int(ev_row["inflection_year"])
+                s_lbl = ev_row["series_label"]
                 yr_data = filtered_df[filtered_df["year"] == yr]
-                top_match = yr_data.sort_values("relative_frequency", ascending=False).iloc[0]
-                with ev_cols[idx % 3]:
+                top_match = yr_data.sort_values("relative_frequency", ascending=False).iloc[0] if not yr_data.empty else None
+
+                relation_txt = f"bij {c_type} in {inf_yr}" if yr == inf_yr else f"{abs(yr - inf_yr)} jr {'na' if yr > inf_yr else 'voor'} {c_type} ({inf_yr})"
+                with ev_cols[idx % len(ev_cols)]:
+                    val_str = f"{top_match['relative_frequency']:.5f}%" if top_match is not None else ""
                     st.info(
                         f"**{desc}**  \n"
-                        f"Hoogste frequentie in {yr}: `{top_match['series_label']}` "
-                        f"({top_match['relative_frequency']:.5f}% • "
-                        f"{int(top_match['raw_match_count']):,} treffers)"
+                        f"*Van toepassing ({relation_txt} van `{s_lbl}`)*  \n"
+                        f"Frequentie in {yr}: `{val_str}`"
                     )
 
         # AWS S3 Explorer
-        with st.expander("☁️ AWS S3 Google Books Ngram Database Explorer (`s3://datasets.elasticmapreduce/ngrams/books/`)"):
+        with st.expander("AWS S3 Google Books Ngram Database Explorer (`s3://datasets.elasticmapreduce/ngrams/books/`)"):
             st.markdown(
                 "Hieronder wordt rechtstreeks de publieke **Google Books Ngrams S3-bucket** op AWS Open Data "
                 "bevraagd met het commando `--no-sign-request`."
@@ -1415,146 +1539,10 @@ def main() -> None:
                 st.code("\n".join(s3_result["entries"][:25]), language="text")
 
     # ==========================================================================
-    # TAB 2: UITGEBREIDE GRAFIEK-BIJZONDERHEDEN (VERBETERING 3)
-    # ==========================================================================
-    with tab_peculiarities:
-        st.header("🔍 Diepte-Analyse: Grafiek-Bijzonderheden, Pieken & Dalen")
-        st.markdown(
-            """
-            Deze tabel analyseert automatisch de wiskundige eigenschappen van elke actieve curve uit de Google Books database:
-            wanneer de term voor het eerst opkwam, waar het absolute hoogtepunt ligt, wat het diepste dal was,
-            en welke historische gebeurtenissen samenvallen met piekjaren.
-            """
-        )
-
-        if "filtered_df" in locals() and not filtered_df.empty:
-            pec_full_df = analyze_chart_peculiarities(filtered_df, group_col="series_label")
-            st.dataframe(pec_full_df, use_container_width=True, hide_index=True)
-
-            st.download_button(
-                "⬇️ Download Bijzonderheden Tabel (CSV)",
-                data=pec_full_df.to_csv(index=False).encode("utf-8"),
-                file_name="grafiek_bijzonderheden.csv",
-                mime="text/csv",
-            )
-
-            st.subheader("📌 Gemarkeerde Mijlpalen in het Geselecteerde Bereik")
-            if not events_in_view.empty:
-                pec_ev_cols = st.columns(2)
-                for i, (_, ev_row) in enumerate(events_in_view.iterrows()):
-                    yr = int(ev_row["year"])
-                    desc = ev_row["historical_event"]
-                    yr_df = filtered_df[filtered_df["year"] == yr]
-                    mean_f = yr_df["relative_frequency"].mean()
-                    total_m = yr_df["raw_match_count"].sum()
-                    with pec_ev_cols[i % 2]:
-                        st.info(f"📅 **{desc}**\n\n* Gemiddelde frequentie in {yr}: **{mean_f:.5f}%**\n* Geschatte vermeldingen: **{total_m:,}**")
-        else:
-            st.info("Voer eerst een geldige zoekopdracht uit in het tabblad 'Visual Builder'.")
-
-    # ==========================================================================
-    # TAB 3: MEERTALIG ZOEKEN (CROSS-LANGUAGE - VERBETERING 5)
-    # ==========================================================================
-    with tab_cross_lang:
-        st.header("🌐 Cross-Language Zoeken & Vergelijken (Live Google Books)")
-        st.markdown(
-            """
-            In klassieke Ngram viewers ben je gebonden aan één taal. Met **Cross-Language Support**
-            worden concepten over taal- en landsgrenzen gekoppeld (bijv. het Engelse *climate* versus het Nederlandse *klimaat*).
-            Data wordt rechtstreeks opgehaald uit de respectievelijke taalcorpora van Google Books.
-            """
-        )
-
-        cl_col1, cl_col2 = st.columns([2.0, 3.0])
-        with cl_col1:
-            st.subheader("Kies een Meertalig Concept")
-            concept_choices = [
-                ("Klimaat (climate / klimaat)", "climate"),
-                ("Democratie (democracy / democratie)", "democracy"),
-                ("Kunstmatige Intelligentie (artificial intelligence / kunstmatige intelligentie)", "artificial intelligence"),
-                ("Telegraaf (telegram)", "telegram"),
-                ("Parijs (Paris / Parijs)", "Paris"),
-            ]
-            selected_concept_key = st.radio(
-                "Kies een concept om over talen heen te onderzoeken:",
-                options=[c[1] for c in concept_choices],
-                format_func=lambda k: next(c[0] for c in concept_choices if c[1] == k),
-                key="concept_radio_sel",
-            )
-
-            mapping = CROSS_LANGUAGE_MAPPINGS.get(selected_concept_key, {})
-            st.markdown(
-                f"""
-                **Gekoppelde Vertalingen:**
-                * 🇬🇧 Engels: `{mapping.get('en')}`
-                * 🇳🇱 Nederlands: `{mapping.get('nl')}`
-                * 🇫🇷 Frans: `{mapping.get('fr')}`
-                """
-            )
-
-            if st.button(f"🔍 Zoek '{mapping.get('en')}, {mapping.get('nl')}' in de Visual Builder"):
-                st.session_state["search_query"] = f"{mapping.get('en')}, {mapping.get('nl')}"
-                st.session_state["selected_regions"] = ["American English", "Dutch"]
-                st.rerun()
-
-        with cl_col2:
-            st.subheader("Vergelijkende Tijdlijn: Engels vs. Nederlands")
-            en_term = mapping.get("en")
-            nl_term = mapping.get("nl")
-
-            with st.spinner("Live Google Books data ophalen voor vergelijking..."):
-                df_en = fetch_live_ngram_from_google(
-                    (en_term,), "NONE", False, ("American English", "British English"), 1800, 2026
-                )
-                df_nl = fetch_live_ngram_from_google(
-                    (nl_term,), "NONE", False, ("Dutch",), 1800, 2026
-                )
-
-            cross_frames = []
-            if df_en is not None and not df_en.empty:
-                df_en_copy = df_en.copy()
-                df_en_copy["Taal & Corpus"] = f"{en_term} [Engels - American/British]"
-                cross_frames.append(df_en_copy)
-            if df_nl is not None and not df_nl.empty:
-                df_nl_copy = df_nl.copy()
-                df_nl_copy["Taal & Corpus"] = f"{nl_term} [Nederlands - Dutch]"
-                cross_frames.append(df_nl_copy)
-
-            if cross_frames:
-                combined_cross = pd.concat(cross_frames, ignore_index=True)
-                combined_cross["smoothed_frequency"] = combined_cross.groupby("Taal & Corpus")[
-                    "relative_frequency"
-                ].transform(lambda s: s.rolling(window=5, min_periods=1, center=True).mean())
-
-                cross_chart = (
-                    alt.Chart(combined_cross)
-                    .mark_line(strokeWidth=2.8, interpolate="monotone")
-                    .encode(
-                        x=alt.X("year:Q", title="Jaartal", axis=alt.Axis(format="d")),
-                        y=alt.Y("smoothed_frequency:Q", title="Relatieve frequentie (%)"),
-                        color=alt.Color("Taal & Corpus:N", scale=alt.Scale(scheme="set1")),
-                        tooltip=[
-                            alt.Tooltip("year:Q", title="Jaar"),
-                            alt.Tooltip("ngram:N", title="Woord"),
-                            alt.Tooltip("Taal & Corpus:N", title="Corpus"),
-                            alt.Tooltip("smoothed_frequency:Q", title="Frequentie (%)", format=".5f"),
-                            alt.Tooltip("raw_match_count:Q", title="Geschatte treffers", format=","),
-                        ],
-                    )
-                    .properties(height=350)
-                    .interactive()
-                )
-                st.altair_chart(cross_chart, use_container_width=True)
-                st.caption(
-                    "💡 *Percentages zijn genormaliseerd naar het totale boekvolume van het eigen taalgebied, "
-                    "waardoor trends direct vergelijkbaar zijn ondanks grote verschillen in absolute boekproductie.*"
-                )
-
-    # ==========================================================================
-    # TAB 4: KENNISBANK & DOCUMENTATIE (VERBETERING 2: CONCREET & OPGEDEELD)
+    # TAB 2: DOCUMENTATIE
     # ==========================================================================
     with tab_documentation:
-        st.header("📖 Kennisbank & Documentatie: Big Data Design & UX")
+        st.header("Documentatie: Big Data Design & Ngram Architectuur")
         st.markdown(
             "Deze documentatie legt de theoretische achtergrond, wiskundige formules "
             "en ontwerpprincipes uit van de vernieuwde Ngram Viewer."
@@ -1637,10 +1625,10 @@ def main() -> None:
                     st.write("Het systeem koppelt concepten semantisch. Wanneer je meertalig zoekt, haalt het voor het Nederlandse corpus de Nederlandse term op en voor het Engelse corpus de Engelse term.")
 
     # ==========================================================================
-    # TAB 5: ACCOUNT, GESCHIEDENIS & INSTELLINGEN (VERBETERING 6)
+    # TAB 3: ACCOUNT & GESCHIEDENIS
     # ==========================================================================
     with tab_account:
-        st.header("👤 Gebruikersaccount, Zoekgeschiedenis & Voorkeuren")
+        st.header("Account, Zoekgeschiedenis & Voorkeuren")
         st.markdown(
             "Beheer hier je profiel, herbekijk eerdere zoekopdrachten, beheer je favoriete grafieken "
             "en stel je persoonlijke standaardwaarden in."
@@ -1657,7 +1645,7 @@ def main() -> None:
                 st.session_state["current_profile"] = chosen_profile
                 st.rerun()
 
-            with st.popover("➕ Nieuw Profiel Aanmaken"):
+            with st.popover("Nieuw Profiel Aanmaken"):
                 new_p_name = st.text_input("Naam van nieuw profiel:")
                 if st.button("Profiel Opslaan"):
                     if new_p_name and new_p_name not in profiles_data["profiles"]:
@@ -1677,17 +1665,19 @@ def main() -> None:
             st.write(f"Standaard instellingen voor **{active_user}**:")
             st.write(f"* Voorkeurs-corpora: `{user_prefs.get('regions')}`")
             st.write(f"* Voorkeurs-grafiektype: `{user_prefs.get('chart_type')}`")
+            st.write(f"* Voorkeurs-eenheid: `{user_prefs.get('y_metric', 'Relatieve frequentie (%)')}`")
             st.write(f"* Voorkeurs-smoothing: `{user_prefs.get('smoothing')} jaar`")
 
             save_pref_col, reset_pref_col = st.columns(2)
             with save_pref_col:
-                if st.button("💾 Sla Filters Op Als Standaard"):
+                if st.button("Sla Filters Op Als Standaard"):
                     profiles_data["profiles"][active_user]["preferences"] = {
                         "regions": st.session_state["selected_regions"],
                         "chart_type": st.session_state["chart_type"],
                         "interpolation": st.session_state["interpolation"],
                         "palette": st.session_state["palette"],
                         "y_scale": st.session_state["y_scale"],
+                        "y_metric": st.session_state["y_metric"],
                         "smoothing": st.session_state["smoothing_val"],
                         "year_range": list(st.session_state["year_range"]),
                         "show_raw": st.session_state["show_raw"],
@@ -1699,20 +1689,21 @@ def main() -> None:
                     save_user_profiles(profiles_data)
                     st.success("Standaardvoorkeuren bijgewerkt!")
             with reset_pref_col:
-                if st.button("↺ Herstel Standaardwaarden"):
+                if st.button("Herstel Standaardwaarden"):
                     prefs = profiles_data["profiles"][active_user]["preferences"]
                     st.session_state["selected_regions"] = prefs.get("regions", ["American English"])
                     st.session_state["chart_type"] = prefs.get("chart_type", "Lijngrafiek")
+                    st.session_state["y_metric"] = prefs.get("y_metric", "Relatieve frequentie (%)")
                     st.session_state["smoothing_val"] = prefs.get("smoothing", 3)
                     st.session_state["year_range"] = tuple(prefs.get("year_range", [1800, 2026]))
                     st.success("Standaardwaarden hersteld!")
                     st.rerun()
 
         with acc_c2:
-            st.subheader("3. ⭐ Opgeslagen Favorieten (Bookmarks)")
+            st.subheader("3. Opgeslagen Favorieten")
             fav_items = profiles_data["profiles"][active_user].get("favorites", [])
             if not fav_items:
-                st.info("Nog geen opgeslagen favorieten. Klik op '⭐ Bewaar Zoekopdracht' onder de grafiek.")
+                st.info("Nog geen opgeslagen favorieten. Klik op 'Bewaar Zoekopdracht' onder de grafiek.")
             else:
                 for f_idx, item in enumerate(fav_items):
                     with st.container(border=True):
@@ -1723,7 +1714,7 @@ def main() -> None:
                         with fc2:
                             st.caption(f"Opgeslagen: {item.get('timestamp')}")
                         with fc3:
-                            if st.button("🔄 Laad", key=f"load_fav_btn_{f_idx}"):
+                            if st.button("Laad", key=f"load_fav_btn_{f_idx}"):
                                 st.session_state["search_query"] = item.get("query")
                                 st.session_state["selected_regions"] = item.get("regions")
                                 st.session_state["year_range"] = tuple(item.get("year_range"))
@@ -1731,14 +1722,14 @@ def main() -> None:
                                 st.rerun()
 
             st.divider()
-            st.subheader("4. 🕒 Recente Zoekgeschiedenis")
+            st.subheader("4. Recente Zoekgeschiedenis")
             history_items = profiles_data["profiles"][active_user].get("history", [])
             if not history_items:
                 st.info("Nog geen zoekgeschiedenis voor dit profiel.")
             else:
                 c_clear, _ = st.columns([1.5, 3.5])
                 with c_clear:
-                    if st.button("🗑️ Wis Zoekgeschiedenis"):
+                    if st.button("Wis Zoekgeschiedenis"):
                         profiles_data["profiles"][active_user]["history"] = []
                         save_user_profiles(profiles_data)
                         st.success("Geschiedenis gewist!")
@@ -1748,12 +1739,12 @@ def main() -> None:
                     with st.container(border=True):
                         hc1, hc2, hc3 = st.columns([2.5, 1.5, 1.0])
                         with hc1:
-                            st.write(f"🔍 **{h_entry.get('query')}**")
+                            st.write(f"**{h_entry.get('query')}**")
                             st.caption(f"Corpora: {', '.join(h_entry.get('regions', []))} • Periode: {h_entry.get('year_range', [1800, 2026])}")
                         with hc2:
                             st.caption(f"Tijd: {h_entry.get('timestamp')}")
                         with hc3:
-                            if st.button("🔄 Herhaal", key=f"replay_hist_btn_{h_idx}"):
+                            if st.button("Herhaal", key=f"replay_hist_btn_{h_idx}"):
                                 st.session_state["search_query"] = h_entry.get("query")
                                 st.session_state["selected_regions"] = h_entry.get("regions", ["American English"])
                                 st.session_state["year_range"] = tuple(h_entry.get("year_range", [1800, 2026]))

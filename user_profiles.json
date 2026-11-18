@@ -1,5 +1,5 @@
 {
-  "active_profile": "Lucas (Onderzoeker)",
+  "active_profile": "Naam",
   "profiles": {
     "Lucas (Onderzoeker)": {
       "preferences": {
@@ -23,6 +23,37 @@
         "cross_lang_mode": false
       },
       "history": [
+        {
+          "query": "climate",
+          "timestamp": "2026-11-18 11:56",
+          "regions": [
+            "Dutch"
+          ],
+          "pos_tag": "NONE",
+          "case_sensitive": false,
+          "year_range": [
+            1800,
+            2026
+          ],
+          "smoothing": 3,
+          "cross_lang": true
+        },
+        {
+          "query": "climate",
+          "timestamp": "2026-11-18 11:55",
+          "regions": [
+            "Dutch",
+            "American English"
+          ],
+          "pos_tag": "NONE",
+          "case_sensitive": false,
+          "year_range": [
+            1800,
+            2026
+          ],
+          "smoothing": 3,
+          "cross_lang": false
+        },
         {
           "query": "climate",
           "timestamp": "2026-11-18 11:54",
@@ -212,6 +243,30 @@
         "regions": [
           "American English",
           "British English"
+        ],
+        "chart_type": "Lijngrafiek",
+        "interpolation": "monotone",
+        "palette": "tableau10",
+        "y_scale": "Lineair",
+        "smoothing": 3,
+        "year_range": [
+          1800,
+          2026
+        ],
+        "show_raw": true,
+        "show_events": true,
+        "show_points": false,
+        "stroke_width": 3,
+        "cross_lang_mode": false
+      },
+      "history": [],
+      "favorites": []
+    },
+    "Naam": {
+      "preferences": {
+        "regions": [
+          "American English",
+          "Dutch"
         ],
         "chart_type": "Lijngrafiek",
         "interpolation": "monotone",
