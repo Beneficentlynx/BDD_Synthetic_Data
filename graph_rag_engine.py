@@ -116,6 +116,7 @@ def fetch_live_ngram_metrics(term: str, corpus: str = "en-US-2019") -> Dict[str,
 
 # Stopwords voor kwalitatieve bigram- en associatiefiltering
 ENGLISH_STOPWORDS: Set[str] = {
+    # Lidwoorden, voegwoorden, voorzetsels
     "the", "of", "and", "a", "an", "in", "to", "for", "with", "on", "at", "by", "from",
     "up", "about", "into", "over", "after", "is", "was", "are", "were", "be", "been",
     "being", "have", "has", "had", "do", "does", "did", "but", "if", "or", "because",
@@ -125,6 +126,13 @@ ENGLISH_STOPWORDS: Set[str] = {
     "we", "us", "you", "i", "me", "he", "she", "him", "one", "all", "any", "both", "each",
     "few", "more", "most", "other", "some", "such", "no", "nor", "not", "only", "own", "same",
     "there", "here", "when", "where", "how", "also", "between", "under", "again", "further",
+    # Modifiers, vage bijwoorden en comparatieven die geen historische concepten zijn
+    "less", "much", "many", "good", "bad", "great", "small", "large", "high", "low",
+    "first", "last", "new", "old", "next", "per", "even", "like", "well",
+    "back", "still", "way", "may", "might", "must", "shall", "would", "could", "done",
+    "make", "made", "get", "got", "take", "took", "see", "saw", "know", "known",
+    "part", "parts", "case", "cases", "point", "points", "time", "times", "year", "years",
+    "day", "days", "way", "ways", "man", "men", "two", "three", "four", "five"
 }
 
 
@@ -194,7 +202,8 @@ def mine_google_ngram_associations(
 
         ts = item["timeseries"]
         max_val = max(ts) if ts else 0.0
-        if max_val <= 0.0:
+        # Betrouwbaarheidsdrempel: filter toevallige OCR-ruis weg (< 1 op de 10 miljoen woorden)
+        if max_val < 1e-7:
             continue
 
         peak_idx = ts.index(max_val)
@@ -645,48 +654,50 @@ class GraphRAGEngine:
             peak_year=peak_yr,
         )
 
-        # Bepaal verbinding: expliciet of automatisch op basis van tijdvlak
+        # Bepaal verbinding: expliciet door gebruiker of op basis van strikte hele-woord match
         connected_node = None
+        connect_reason = ""
         if connect_to_id and connect_to_id in self.graph:
             connected_node = connect_to_id
+            connect_reason = f"Door gebruiker handmatig gekoppeld aan '{self.graph.nodes[connect_to_id].get('label', connect_to_id)}'."
         else:
-            # Zoek een bestaande node die qua periode in de buurt ligt
-            closest_dist = 999
+            # Alleen koppelen als er een ECHTE hele-woord overeenkomst is met een bestaande entiteit
+            t_words = set(clean_t.lower().split())
             for n, attrs in self.graph.nodes(data=True):
-                if n != node_id and attrs.get("period"):
-                    try:
-                        first_yr = int(attrs["period"][:4])
-                        dist = abs(first_yr - peak_yr)
-                        if dist < closest_dist:
-                            closest_dist = dist
-                            connected_node = n
-                    except Exception:
-                        continue
+                if n != node_id:
+                    n_words = set(n.lower().split())
+                    label_words = set(attrs.get("label", "").lower().split())
+                    common = t_words.intersection(n_words.union(label_words))
+                    if common and any(len(w) >= 4 for w in common) and (n_words.issubset(t_words) or t_words.issubset(n_words)):
+                        connected_node = n
+                        connect_reason = f"Conceptuele en lexicale overlap: deelt trefwoord '{list(common)[0]}' met '{attrs.get('label', n)}'."
+                        break
 
-        if not connected_node:
-            connected_node = "climate" if "climate" in self.graph else list(self.graph.nodes)[0]
-
-        # Voeg relatie toe
-        self.graph.add_edge(
-            connected_node,
-            node_id,
-            relation_type="CO_TEMPORAL_WITH",
-            weight=0.85,
-            explanation=f"Live gekoppeld op basis van historische Ngram piekperiode rond {peak_yr}.",
-        )
-
-        return True, f"'{clean_t.title()}' succesvol toegevoegd en live gekoppeld aan '{self.graph.nodes[connected_node].get('label', connected_node)}'!"
+        if connected_node:
+            self.graph.add_edge(
+                connected_node,
+                node_id,
+                relation_type="RELATED_TO",
+                weight=0.85,
+                explanation=connect_reason,
+            )
+            return True, f"'{clean_t.title()}' succesvol toegevoegd en logisch gekoppeld aan '{self.graph.nodes[connected_node].get('label', connected_node)}' ({connect_reason})!"
+        else:
+            return True, f"'{clean_t.title()}' succesvol toegevoegd als zelfstandig kenniscluster (geen willekeurige verbindingen geforceerd)."
 
     def mine_and_ingest_google_books_database(
         self,
         term: str,
         corpus: str = "en-US-2019",
         max_items: int = 5,
+        connect_to_existing_id: Optional[str] = None,
     ) -> Tuple[bool, str, List[Dict[str, Any]]]:
         """
         Bevraagt rechtstreeks de officiële Google Books Ngram Viewer database met wildcard expansies,
         haalt de authentieke historische co-occurrenties/collocaties op en integreert ze dynamisch
         in de Kennisgraaf met getypeerde relaties en gewichten.
+        Er worden GEEN willekeurige 'tijdsverbindingen' gemaakt: relaties worden uitsluitend
+        gebaseerd op authentieke Google Books co-occurrenties of expliciete lexicale overlap.
         """
         clean_t = term.strip()
         if not clean_t:
@@ -698,48 +709,62 @@ class GraphRAGEngine:
         if root_id not in self.graph:
             metrics = self.get_entity_live_ngram_metrics(clean_t)
             peak_yr = metrics.get("peak_year", 2000)
+            pk_pct = metrics.get("peak_val_pct", 0.0)
+
+            # Historische toelichting / disambiguatie bij zeldzame of moderne termen
+            if pk_pct < 0.00005:
+                hist_note = f"Zeldzame of moderne term in historische boeken (frequentie < 0.00005%). Piek in boeken rond {peak_yr}."
+            else:
+                hist_note = f"Historisch concept in Google Books ({corpus}). Piekjaar: {peak_yr} ({pk_pct:.5f}% van alle gedrukte boeken)."
+
             self.graph.add_node(
                 root_id,
                 label=clean_t.title(),
                 category="Concept",
-                period=f"{peak_yr} (Piek)",
+                period=f"{peak_yr} (Piek)" if pk_pct >= 0.00005 else "Recent / Modern",
                 ngram=clean_t,
-                desc=f"Geïmporteerd uit de Google Books Ngram Database ({corpus}). Piekjaar: {peak_yr}.",
+                desc=hist_note,
                 color=CATEGORY_COLORS.get("Concept", "#1a73e8"),
                 is_database_root=True,
                 peak_year=peak_yr,
-                peak_val_pct=metrics.get("peak_val_pct", 0.0),
+                peak_val_pct=pk_pct,
             )
 
-            # Verbind root node met bestaand netwerk op basis van temporele nabijheid
-            closest_dist = 999
-            bridge_node = None
-            for n, attrs in self.graph.nodes(data=True):
-                if n != root_id and attrs.get("period"):
-                    try:
-                        yr = int(attrs["period"][:4])
-                        dist = abs(yr - peak_yr)
-                        if dist < closest_dist:
-                            closest_dist = dist
-                            bridge_node = n
-                    except Exception:
-                        continue
-
-            if not bridge_node:
-                bridge_node = "climate" if "climate" in self.graph else list(self.graph.nodes)[0]
-
-            self.graph.add_edge(
-                bridge_node,
-                root_id,
-                relation_type="CO_TEMPORAL_WITH",
-                weight=0.80,
-                explanation=f"Kennisgraaf overbrugging rond tijdvak {peak_yr}.",
-            )
+            # Optioneel koppelen: expliciet gekozen of op basis van strikte hele-woord match
+            if connect_to_existing_id and connect_to_existing_id in self.graph:
+                self.graph.add_edge(
+                    connect_to_existing_id,
+                    root_id,
+                    relation_type="USER_ANCHORED_TO",
+                    weight=0.85,
+                    explanation=f"Door gebruiker handmatig verankerd aan '{self.graph.nodes[connect_to_existing_id].get('label', connect_to_existing_id)}'.",
+                )
+            else:
+                # Controleer of er een echte hele-woord overlap is met een bestaande entiteit
+                t_words = set(root_id.split())
+                for ex_n, ex_attrs in list(self.graph.nodes(data=True)):
+                    if ex_n != root_id:
+                        ex_words = set(ex_n.split())
+                        if ex_words and (ex_words.issubset(t_words) or t_words.issubset(ex_words)):
+                            if any(len(w) >= 4 for w in t_words.intersection(ex_words)):
+                                self.graph.add_edge(
+                                    ex_n,
+                                    root_id,
+                                    relation_type="SUB_CONCEPT_OF",
+                                    weight=0.88,
+                                    explanation=f"Conceptuele deelrelatie: '{ex_attrs.get('label', ex_n)}' is direct verbonden met '{clean_t.title()}'.",
+                                )
+                                break
 
         # Mijn associaties uit de Google Books database
         associations = mine_google_ngram_associations(clean_t, corpus=corpus, max_results=max_items)
         if not associations:
-            return False, f"Geen significante historische co-locaties gevonden in Google Books voor '{clean_t}'.", []
+            return (
+                False,
+                f"Geen betrouwbare historische co-locaties gevonden in Google Books voor '{clean_t}'. "
+                f"Voor recente termen (zoals computerspellen of moderne fenomenen) heeft Google Books (1800-2019) geen significante historische boekassociaties.",
+                [],
+            )
 
         added_labels = []
         for assoc in associations:
@@ -770,10 +795,16 @@ class GraphRAGEngine:
             edge_weight = min(0.95, max(0.60, pk_pct * 15000))
             if assoc["direction"] == "prefix":
                 u, v = nid, root_id
-                expl = f"'{assoc['clean_label']}' trad historisch frequent op met piek rond {peak_yr} in boeken."
+                expl = (
+                    f"'{assoc['clean_label']}' trad in Google Books frequent op als vaste combinatie met '{clean_t.title()}' "
+                    f"(piekjaar {peak_yr}, boekfrequentie {pk_pct:.5f}%)."
+                )
             else:
                 u, v = root_id, nid
-                expl = f"'{clean_t.title()}' co-occurreert frequent met '{assoc['clean_label']}' (piek {peak_yr})."
+                expl = (
+                    f"'{clean_t.title()}' vormt in Google Books een vaste historische combinatie met '{assoc['clean_label']}' "
+                    f"(piekjaar {peak_yr}, boekfrequentie {pk_pct:.5f}%)."
+                )
 
             self.graph.add_edge(
                 u,
@@ -783,16 +814,20 @@ class GraphRAGEngine:
                 explanation=expl,
             )
 
-            # Automatische kruisverbindingen met bestaande knooppunten
-            for existing_n in list(self.graph.nodes()):
-                if existing_n not in (nid, root_id) and existing_n in nid:
-                    self.graph.add_edge(
-                        existing_n,
-                        nid,
-                        relation_type="SUB_CONCEPT_OF",
-                        weight=0.75,
-                        explanation="Conceptuele deelrelatie ontdekt via Google Books Ngram index.",
-                    )
+            # Automatische kruisverbindingen uitsluitend bij strikte hele-woord overeenkomst (minimaal 4 letters)
+            nid_words = set(nid.split())
+            for existing_n, attrs in list(self.graph.nodes(data=True)):
+                if existing_n not in (nid, root_id):
+                    ex_words = set(existing_n.split())
+                    common = nid_words.intersection(ex_words)
+                    if common and any(len(w) >= 4 for w in common) and (ex_words.issubset(nid_words) or nid_words.issubset(ex_words)):
+                        self.graph.add_edge(
+                            existing_n,
+                            nid,
+                            relation_type="SUB_CONCEPT_OF",
+                            weight=0.75,
+                            explanation=f"Conceptuele verwantschap via trefwoord '{list(common)[0]}' met '{attrs.get('label', existing_n)}'.",
+                        )
 
         msg = (
             f"Succesvol {len(associations)} historische associaties gemined uit Google Books Ngram Database "
@@ -967,7 +1002,15 @@ class GraphRAGEngine:
         try:
             shortest_path = nx.shortest_path(undirected, source=src_id, target=dst_id)
         except nx.NetworkXNoPath:
-            return {"success": False, "message": f"Geen verbinding gevonden tussen '{src_id}' en '{dst_id}'."}
+            src_lbl = self.graph.nodes[src_id].get("label", src_id) if src_id in self.graph else src_id
+            dst_lbl = self.graph.nodes[dst_id].get("label", dst_id) if dst_id in self.graph else dst_id
+            return {
+                "success": False,
+                "message": (
+                    f"Geen historisch of causaal pad gevonden tussen '{src_lbl}' en '{dst_lbl}'. "
+                    f"Deze concepten behoren tot gescheiden historische domeinen zonder geverifieerde co-occurrentie."
+                ),
+            }
 
         steps = []
         for i in range(len(shortest_path) - 1):
@@ -1088,14 +1131,24 @@ class GraphRAGEngine:
         out_summary = ", ".join([f"`{e['target_label']}` ({e['relation_type'].replace('_', ' ').lower()})" for e in out_edges[:3]])
         in_summary = ", ".join([f"`{e['source_label']}` ({e['relation_type'].replace('_', ' ').lower()})" for e in in_edges[:3]])
 
-        peak_str = f"**{ngram_metrics.get('peak_year')}** ({ngram_metrics.get('peak_val_pct', 0):.5f}%)" if ngram_metrics.get("success") else "Rond 1990"
+        peak_val = ngram_metrics.get("peak_val_pct", 0.0)
+        peak_str = f"**{ngram_metrics.get('peak_year')}** ({peak_val:.5f}%)" if ngram_metrics.get("success") else "Rond 1990"
         trend_str = ngram_metrics.get("trend", "➡️ Stabiel")
+
+        # Contextuele waarschuwing / verduidelijking bij anachronistische of zeldzame termen
+        disambiguation_note = ""
+        if peak_val < 0.00005:
+            disambiguation_note = (
+                "\n\n> [Historische Context] Deze term kent een zeer lage frequentie in de historische "
+                "Google Books index (1800-2019). Eventuele vroege historische vermeldingen kunnen homoniemen "
+                "of vaktermen zijn (zoals 'mine craft' = marinevaartuigen/mijnenvegers), niet het moderne fenomeen.\n"
+            )
 
         return (
             f"#### {name}\n"
             f"*Categorie:* `{category}` • *Historisch Tijdvak:* `{period}` • *Google Ngram Piek:* {peak_str}  \n"
             f"*Live Trend:* {trend_str}\n\n"
-            f"**Context:**  \n{desc}\n\n"
+            f"**Context:**  \n{desc}{disambiguation_note}\n\n"
             f"**Graafrelaties:**  \n"
             f"* **Beïnvloedt direct:** {out_summary or 'Geen uitgaande paden geregistreerd.'}\n"
             f"* **Gedreven door:** {in_summary or 'Geen inkomende paden geregistreerd.'}"

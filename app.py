@@ -1659,6 +1659,8 @@ def main() -> None:
 
                 sub_miner_tab, sub_single_tab, sub_s3_tab = st.tabs(["🔍 Associatieminer", "➕ Enkele term", "🗄️ AWS S3 Status"])
 
+                anchor_options = ["Geen (Zelfstandig cluster)"] + entity_labels
+
                 with sub_miner_tab:
                     st.markdown("**Mijn historische concepten & co-occurrenties:**")
                     mine_query = st.text_input(
@@ -1680,13 +1682,23 @@ def main() -> None:
                         "European Fiction (2019)": "en-fiction-2019",
                     }
                     mine_corpus_code = corpus_code_map.get(mine_corpus_choice, "en-US-2019")
+                    anchor_choice = st.selectbox(
+                        "Koppel optioneel aan bestaand concept:",
+                        options=anchor_options,
+                        key="rag_db_mine_anchor",
+                        help="Kies 'Geen' om een zelfstandig cluster te creëren zonder koppeling aan bestaande nodes.",
+                    )
                     max_assocs_num = st.slider("Aantal associaties:", min_value=3, max_value=8, value=5, key="rag_db_max_items")
 
                     if st.button("🚀 Mijn & Voeg toe aan Graaf", type="primary", use_container_width=True, key="rag_db_mine_btn"):
                         if mine_query.strip():
                             with st.spinner("Google Books database bevragen..."):
+                                sel_anchor_id = entity_id_map.get(anchor_choice) if anchor_choice != "Geen (Zelfstandig cluster)" else None
                                 succ, msg, assocs = rag_engine.mine_and_ingest_google_books_database(
-                                    mine_query.strip(), corpus=mine_corpus_code, max_items=max_assocs_num
+                                    mine_query.strip(),
+                                    corpus=mine_corpus_code,
+                                    max_items=max_assocs_num,
+                                    connect_to_existing_id=sel_anchor_id,
                                 )
                                 if succ:
                                     st.session_state["pending_rag_entity"] = mine_query.strip().title()
@@ -1705,9 +1717,15 @@ def main() -> None:
                         options=["Live Ngram Concept", "Wetenschap & Fysica", "Literatuur & Cultuur", "Technologie"],
                         key="custom_ngram_cat",
                     )
+                    single_anchor_choice = st.selectbox(
+                        "Koppel optioneel aan bestaand concept:",
+                        options=anchor_options,
+                        key="custom_single_anchor",
+                    )
                     if st.button("Voeg toe & Haal Live Ngram op", use_container_width=True, key="custom_single_add_btn"):
                         if new_term:
-                            succ, msg = rag_engine.add_custom_live_term(new_term, new_cat)
+                            sel_s_anchor = entity_id_map.get(single_anchor_choice) if single_anchor_choice != "Geen (Zelfstandig cluster)" else None
+                            succ, msg = rag_engine.add_custom_live_term(new_term, new_cat, connect_to_id=sel_s_anchor)
                             if succ:
                                 st.session_state["pending_rag_entity"] = new_term.strip().title()
                                 st.success(msg)
