@@ -290,6 +290,22 @@
       },
       "history": [
         {
+          "query": "climate, democracy, telegram",
+          "timestamp": "2026-11-19 19:37",
+          "regions": [
+            "American English",
+            "Dutch"
+          ],
+          "pos_tag": "NONE",
+          "case_sensitive": false,
+          "year_range": [
+            1800,
+            2026
+          ],
+          "smoothing": 3,
+          "cross_lang": false
+        },
+        {
           "query": "climate",
           "timestamp": "2026-11-18 12:19",
           "regions": [

@@ -23,6 +23,9 @@ import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
+
+from graph_rag_engine import CATEGORY_COLORS, GraphRAGEngine, generate_visjs_html
 
 # ==============================================================================
 # PAGINA-CONFIGURATIE
@@ -912,6 +915,9 @@ def main() -> None:
 
     user_prefs = profiles_data["profiles"][active_user]["preferences"]
 
+    if "pending_search_query" in st.session_state and st.session_state["pending_search_query"] is not None:
+        st.session_state["search_query"] = st.session_state.pop("pending_search_query")
+
     if "search_query" not in st.session_state:
         st.session_state["search_query"] = "climate, democracy, telegram"
     if "selected_pos_label" not in st.session_state:
@@ -961,9 +967,10 @@ def main() -> None:
     # ==========================================================================
     # KORTE EN INFORMATIEVE TABS ZONDER EMOJI
     # ==========================================================================
-    tab_viewer, tab_documentation, tab_account = st.tabs(
+    tab_viewer, tab_graphrag, tab_documentation, tab_account = st.tabs(
         [
             "Ngram Viewer",
+            "GraphRAG",
             "Documentatie",
             "Account",
         ]
@@ -1187,7 +1194,7 @@ def main() -> None:
             btn_col, _ = st.columns([2.5, 5.5])
             with btn_col:
                 if st.button(f"Bedoelde je: '{corrected_query_str}'? (Klik om toe te passen)", type="primary"):
-                    st.session_state["search_query"] = corrected_query_str
+                    st.session_state["pending_search_query"] = corrected_query_str
                     st.rerun()
 
         if not valid_search_terms:
@@ -1594,7 +1601,235 @@ def main() -> None:
                 st.code("\n".join(s3_result["entries"][:25]), language="text")
 
     # ==========================================================================
-    # TAB 2: DOCUMENTATIE
+    # TAB 2: GRAPHRAG (KNOWLEDGE GRAPH & SEMANTISCHE RETRIEVAL)
+    # ==========================================================================
+    with tab_graphrag:
+        st.header("GraphRAG: Historische Kennisgraaf & Semantische Retrieval")
+        st.markdown(
+            "GraphRAG verbindt een gestructureerde **Kennisgraaf (Knowledge Graph)** van historische concepten, "
+            "uitvindingen en gebeurtenissen met de Google Books Ngram dataset. "
+            "Kies een zoekmodus om entiteiten lokaal te verkennen, overkoepelende thematische communities "
+            "te analyseren, of historische conceptbruggen (multi-hop) te ontdekken."
+        )
+
+        @st.cache_resource
+        def get_rag_engine() -> GraphRAGEngine:
+            return GraphRAGEngine()
+
+        rag_engine = get_rag_engine()
+        all_entities = rag_engine.get_all_entities()
+        entity_labels = [e["label"] for e in all_entities]
+        entity_id_map = {e["label"]: e["id"] for e in all_entities}
+
+        rag_mode = st.radio(
+            "Selecteer GraphRAG Zoekmodus:",
+            options=[
+                "🔍 Lokale Entiteit & Subgraaf (Local Search)",
+                "🌐 Thematische Community Synthese (Global Search)",
+                "🧭 Multi-Hop Conceptoverbrugging (Pathfinding)",
+            ],
+            horizontal=True,
+            key="graphrag_mode_selection",
+        )
+
+        st.markdown('<div class="ngram-filter-divider"></div>', unsafe_allow_html=True)
+
+        active_highlight_nodes: Optional[Set[str]] = None
+
+        # ----------------------------------------------------------------------
+        # MODUS 1: LOCAL SEARCH (Ego-graaf & directe relaties)
+        # ----------------------------------------------------------------------
+        if "Lokale Entiteit" in rag_mode:
+            c_sel1, c_sel2 = st.columns([3.5, 1.5])
+            with c_sel1:
+                default_idx = entity_labels.index("Klimaat / Climate") if "Klimaat / Climate" in entity_labels else 0
+                selected_label = st.selectbox(
+                    "Kies een entiteit of historisch concept uit de kennisgraaf:",
+                    options=entity_labels,
+                    index=default_idx,
+                    key="rag_local_entity_choice",
+                )
+            with c_sel2:
+                max_hops = st.selectbox(
+                    "Zoekradius (hops):",
+                    options=[1, 2],
+                    index=0,
+                    key="rag_local_radius",
+                    help="1 hop = directe buren; 2 hops = uitgebreide context.",
+                )
+
+            target_id = entity_id_map.get(selected_label, "climate")
+            local_res = rag_engine.local_search(target_id, max_hops=max_hops)
+
+            res_col1, res_col2 = st.columns([3.2, 1.8])
+            with res_col1:
+                st.markdown(local_res["synthesis"])
+
+                # Directe relatietabel
+                st.markdown("##### Directe Graaf-Relaties")
+                rel_rows = []
+                for out_e in local_res["outgoing_relations"]:
+                    rel_rows.append(
+                        {
+                            "Richting": "Uitgaand ➔",
+                            "Gerelateerde Entiteit": out_e["target_label"],
+                            "Type": out_e["relation_type"],
+                            "Sterkte": f"{out_e['weight']:.2f}",
+                            "Historische Context": out_e["explanation"],
+                        }
+                    )
+                for in_e in local_res["incoming_relations"]:
+                    rel_rows.append(
+                        {
+                            "Richting": "Inkomend ⬅",
+                            "Gerelateerde Entiteit": in_e["source_label"],
+                            "Type": in_e["relation_type"],
+                            "Sterkte": f"{in_e['weight']:.2f}",
+                            "Historische Context": in_e["explanation"],
+                        }
+                    )
+                if rel_rows:
+                    st.dataframe(pd.DataFrame(rel_rows), use_container_width=True, hide_index=True)
+
+            with res_col2:
+                with st.container(border=True):
+                    st.subheader("Entiteit Visitekaartje")
+                    st.write(f"**Naam:** {local_res['label']}")
+                    st.write(f"**Categorie:** `{local_res['category']}`")
+                    st.write(f"**Tijdvak:** `{local_res['period']}`")
+                    st.write(f"**Ngram Term:** `{local_res['ngram']}`")
+                    st.write(f"**Buren in subgraaf:** `{local_res['metrics']['neighbors_count']}`")
+                    st.write(f"**PageRank Score:** `{local_res['metrics']['pagerank']}`")
+
+                    st.divider()
+                    st.markdown("**1-Klik Ngram Viewer Koppeling:**")
+                    if st.button(
+                        f"📈 Visualiseer '{local_res['ngram']}' in Ngram Viewer",
+                        type="primary",
+                        use_container_width=True,
+                        key=f"plot_local_btn_{local_res['entity_id']}",
+                    ):
+                        st.session_state["pending_search_query"] = local_res["ngram"]
+                        st.toast(f"Zoekterm '{local_res['ngram']}' klaargezet in Ngram Viewer!")
+                        st.rerun()
+
+            with st.expander("Geraadpleegde Historische Bronfragmenten (Evidence Chunks)", expanded=False):
+                if local_res["evidence_chunks"]:
+                    for chk in local_res["evidence_chunks"]:
+                        st.markdown(f"**{chk['title']}** — *{chk['source']} ({chk['year']})*")
+                        st.caption(f"Betrokken entiteiten: {', '.join(chk['entities'])}")
+                        st.info(chk["text"])
+                else:
+                    st.write("Geen directe tekstchunks geregistreerd voor deze entiteit.")
+
+            active_highlight_nodes = set(local_res["subgraph_nodes"])
+
+        # ----------------------------------------------------------------------
+        # MODUS 2: GLOBAL SEARCH (Thematische communities)
+        # ----------------------------------------------------------------------
+        elif "Thematische Community" in rag_mode:
+            st.markdown(
+                "Stel een overkoepelende vraag over historische trends, of selecteer een community "
+                "om de macro-synthese te inspecteren."
+            )
+
+            preset_prompts = [
+                "Welke wisselwerking bestond er tussen industriële revolutie, stoomkracht en klimaat?",
+                "Hoe ontstond het vakgebied Artificial Intelligence uit communicatietechnologie?",
+                "Hoe verhouden Verlichtingsidealen zich tot moderne burgerrechten en democratie?",
+                "Wat was de invloed van empirisch onderzoek op Darwins evolutieleer?",
+            ]
+            chosen_prompt = st.selectbox("Snelle voorbeeldvragen:", options=preset_prompts, key="rag_preset_q")
+
+            global_q = st.text_input(
+                "Of typ je eigen overkoepelende vraag:",
+                value=chosen_prompt,
+                key="rag_custom_global_q",
+            )
+
+            global_res = rag_engine.global_search(global_q)
+            st.markdown(global_res["synthesis"])
+
+            top_c = global_res.get("top_community")
+            if top_c:
+                st.markdown("##### Entiteiten in deze Thematische Community")
+                c_chips = " • ".join([f"`{n}`" for n in top_c["nodes"]])
+                st.markdown(c_chips)
+
+                # Ngram Bridge om het gehele cluster samen te plotten
+                comm_ngrams = ", ".join(
+                    [rag_engine.graph.nodes[n].get("ngram", n) for n in top_c["nodes"][:4]]
+                )
+                if st.button(
+                    f"📈 Vergelijk Cluster in Ngram Viewer ('{comm_ngrams}')",
+                    type="primary",
+                    key="plot_cluster_terms_btn",
+                ):
+                    st.session_state["pending_search_query"] = comm_ngrams
+                    st.toast("Thematisch cluster klaargezet in Ngram Viewer!")
+                    st.rerun()
+
+                active_highlight_nodes = set(top_c["nodes"])
+
+        # ----------------------------------------------------------------------
+        # MODUS 3: MULTI-HOP PATHFINDING (Conceptoverbrugging)
+        # ----------------------------------------------------------------------
+        else:
+            st.markdown(
+                "Vind de kortste en meest invloedrijke historische route tussen twee willekeurige concepten "
+                "en ontdek hoe zij causaal met elkaar verbonden zijn."
+            )
+
+            p_col1, p_col2 = st.columns(2)
+            with p_col1:
+                def_src = entity_labels.index("Stoommachine") if "Stoommachine" in entity_labels else 0
+                src_label = st.selectbox("Startconcept (Concept A):", options=entity_labels, index=def_src, key="path_src_select")
+            with p_col2:
+                def_dst = entity_labels.index("Klimaat / Climate") if "Klimaat / Climate" in entity_labels else 1
+                dst_label = st.selectbox("Doelconcept (Concept B):", options=entity_labels, index=def_dst, key="path_dst_select")
+
+            src_id = entity_id_map.get(src_label, "steam engine")
+            dst_id = entity_id_map.get(dst_label, "climate")
+
+            path_res = rag_engine.find_relational_path(src_id, dst_id)
+
+            if path_res["success"]:
+                st.markdown(path_res["synthesis"])
+
+                # Ngram bridge voor het hele pad
+                chain_ngrams = ", ".join(
+                    [rag_engine.graph.nodes[n].get("ngram", n) for n in path_res["path_nodes"]]
+                )
+                if st.button(
+                    f"📈 Visualiseer Historische Keten in Ngram Viewer ('{chain_ngrams}')",
+                    type="primary",
+                    key="plot_path_chain_btn",
+                ):
+                    st.session_state["pending_search_query"] = chain_ngrams
+                    st.toast("Historische keten klaargezet in Ngram Viewer!")
+                    st.rerun()
+
+                active_highlight_nodes = set(path_res["path_nodes"])
+            else:
+                st.warning(path_res["message"])
+                active_highlight_nodes = None
+
+        # ----------------------------------------------------------------------
+        # INTERACTIEVE FORCE-DIRECTED GRAAFVISUALISATIE (VIS.JS)
+        # ----------------------------------------------------------------------
+        st.markdown('<div class="ngram-filter-divider"></div>', unsafe_allow_html=True)
+        st.subheader("Interactieve Kennisgraaf (Force-Directed Physics & Multi-Hop)")
+        st.caption(
+            "Sleep de bollen om relaties te verplaatsen, gebruik de muis om in- en uit te zoomen, "
+            "en klik op een bol om details direct in de informatiekaart te openen."
+        )
+
+        vis_json_str = rag_engine.get_visualization_json(highlighted_nodes=active_highlight_nodes)
+        vis_html_str = generate_visjs_html(vis_json_str, height_px=520)
+        components.html(vis_html_str, height=540, scrolling=False)
+
+    # ==========================================================================
+    # TAB 3: DOCUMENTATIE
     # ==========================================================================
     with tab_documentation:
         st.header("Documentatie: Big Data Design & Ngram Architectuur")
@@ -1678,9 +1913,16 @@ def main() -> None:
                     st.write("Met hoofdlettergevoeligheid AAN toont 'Paris' de hoofdstad van Frankrijk. 'paris' met kleine letters komt veel minder voor (vaak typefouten of plantennamen).")
                 with st.expander("Hoe werkt de meertalige koppeling?"):
                     st.write("Het systeem koppelt concepten semantisch. Wanneer je meertalig zoekt, haalt het voor het Nederlandse corpus de Nederlandse term op en voor het Engelse corpus de Engelse term.")
+                with st.expander("Wat is de meerwaarde van GraphRAG t.o.v. traditionele RAG?"):
+                    st.write(
+                        "Traditionele RAG zoekt alleen op tekstuele nabijheid van losse passages. "
+                        "GraphRAG modelleert daarentegen een Kennisgraaf met getypeerde relaties en thematische gemeenschappen. "
+                        "Hierdoor kan het systeem zowel lokale details (Local Search), macro-historische ontwikkelingen (Global Search) "
+                        "als causale ketens tussen begrippen (Multi-Hop Pathfinding) inzichtelijk maken."
+                    )
 
     # ==========================================================================
-    # TAB 3: ACCOUNT & GESCHIEDENIS
+    # TAB 4: ACCOUNT & GESCHIEDENIS
     # ==========================================================================
     with tab_account:
         st.header("Account, Zoekgeschiedenis & Voorkeuren")
@@ -1776,7 +2018,7 @@ def main() -> None:
                             st.caption(f"Opgeslagen: {item.get('timestamp')}")
                         with fc3:
                             if st.button("Laad", key=f"load_fav_btn_{f_idx}"):
-                                st.session_state["search_query"] = item.get("query")
+                                st.session_state["pending_search_query"] = item.get("query")
                                 st.session_state["selected_regions"] = item.get("regions")
                                 st.session_state["year_range"] = tuple(item.get("year_range"))
                                 st.session_state["smoothing_val"] = item.get("smoothing", 3)
@@ -1806,7 +2048,7 @@ def main() -> None:
                             st.caption(f"Tijd: {h_entry.get('timestamp')}")
                         with hc3:
                             if st.button("Herhaal", key=f"replay_hist_btn_{h_idx}"):
-                                st.session_state["search_query"] = h_entry.get("query")
+                                st.session_state["pending_search_query"] = h_entry.get("query")
                                 st.session_state["selected_regions"] = h_entry.get("regions", ["American English"])
                                 st.session_state["year_range"] = tuple(h_entry.get("year_range", [1800, 2026]))
                                 st.session_state["smoothing_val"] = h_entry.get("smoothing", 3)
