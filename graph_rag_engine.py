@@ -25,6 +25,7 @@ CATEGORY_COLORS: Dict[str, str] = {
     "Literatuur & Cultuur": "#00897b",  # Google Teal
     "Wetenschap & Fysica": "#3949ab",   # Google Indigo
     "Live Ngram Concept": "#d81b60",    # Google Magenta (voor dynamisch toegevoegde termen)
+    "Google Books Database": "#0288d1", # Google Ocean Blue (voor database geminede co-locaties)
 }
 
 
@@ -111,6 +112,121 @@ def fetch_live_ngram_metrics(term: str, corpus: str = "en-US-2019") -> Dict[str,
         "sample_points": {1850: 0.0001, 1900: 0.0005, 1950: 0.002, 2000: 0.004},
         "source": "Offline historische index",
     }
+
+
+# Stopwords voor kwalitatieve bigram- en associatiefiltering
+ENGLISH_STOPWORDS: Set[str] = {
+    "the", "of", "and", "a", "an", "in", "to", "for", "with", "on", "at", "by", "from",
+    "up", "about", "into", "over", "after", "is", "was", "are", "were", "be", "been",
+    "being", "have", "has", "had", "do", "does", "did", "but", "if", "or", "because",
+    "as", "until", "while", "that", "this", "these", "those", "then", "so", "than",
+    "too", "very", "can", "will", "just", "should", "now", "our", "its", "their", "my",
+    "your", "his", "her", "which", "what", "who", "whom", "whose", "it", "they", "them",
+    "we", "us", "you", "i", "me", "he", "she", "him", "one", "all", "any", "both", "each",
+    "few", "more", "most", "other", "some", "such", "no", "nor", "not", "only", "own", "same",
+    "there", "here", "when", "where", "how", "also", "between", "under", "again", "further",
+}
+
+
+def mine_google_ngram_associations(
+    term: str,
+    corpus: str = "en-US-2019",
+    max_results: int = 6,
+) -> List[Dict[str, Any]]:
+    """
+    Bevraagt de officiële Google Books Ngram Viewer database met wildcard query's
+    om authentieke historische co-occurrenties, bigrams en conceptuele associaties
+    te ontdekken die in miljoenen gescande boeken voorkomen.
+    """
+    clean_term = term.strip().lower()
+    if not clean_term:
+        return []
+
+    # Wildcards: linker associatie (* term), rechter associatie (term *), en conjunctions (term and *)
+    queries = [f"* {clean_term}", f"{clean_term} *"]
+    if " " not in clean_term:
+        queries.append(f"{clean_term} and *")
+
+    query_str = ",".join(queries)
+    params = {
+        "content": query_str,
+        "year_start": "1800",
+        "year_end": "2019",
+        "corpus": corpus,
+        "smoothing": "3",
+    }
+    url = f"https://books.google.com/ngrams/json?{urllib.parse.urlencode(params)}"
+
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) NgramDatabaseMiner/2.0"},
+        )
+        with urllib.request.urlopen(req, timeout=4.5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return []
+
+    extracted: List[Dict[str, Any]] = []
+    seen: Set[str] = {clean_term}
+
+    for item in data:
+        ngram = item.get("ngram", "").strip()
+        # Filter ongeldige patronen, asterisken of leestekens
+        if not ngram or "*" in ngram or not item.get("timeseries"):
+            continue
+        if any(char in ngram for char in ["'", '"', ",", ".", ":", ";", "/", "\\", "_"]):
+            continue
+
+        lower_ng = ngram.lower()
+        words = lower_ng.split()
+        if len(words) < 2:
+            continue
+
+        # Filter stopwords
+        other_words = [w for w in words if w != clean_term and w != "and"]
+        if not other_words or any(w in ENGLISH_STOPWORDS for w in other_words):
+            continue
+
+        if lower_ng in seen:
+            continue
+        seen.add(lower_ng)
+
+        ts = item["timeseries"]
+        max_val = max(ts) if ts else 0.0
+        if max_val <= 0.0:
+            continue
+
+        peak_idx = ts.index(max_val)
+        peak_year = 1800 + peak_idx
+        peak_val_pct = float(max_val) * 100.0
+
+        # Bereken gemiddelde frequentie
+        avg_val_pct = (sum(ts) / max(1, len(ts))) * 100.0
+
+        direction = "prefix" if words[0] != clean_term else "suffix"
+
+        extracted.append(
+            {
+                "ngram": ngram,
+                "clean_label": ngram.title(),
+                "peak_year": peak_year,
+                "peak_val_pct": peak_val_pct,
+                "avg_val_pct": avg_val_pct,
+                "direction": direction,
+                "relation_type": "CO_OCCURS_IN_GOOGLE_BOOKS",
+                "sample_points": {
+                    1850: round(float(ts[50]) * 100.0, 5) if len(ts) > 50 else 0.0,
+                    1900: round(float(ts[100]) * 100.0, 5) if len(ts) > 100 else 0.0,
+                    1950: round(float(ts[150]) * 100.0, 5) if len(ts) > 150 else 0.0,
+                    2000: round(float(ts[200]) * 100.0, 5) if len(ts) > 200 else 0.0,
+                },
+            }
+        )
+
+    # Rangschik op piekfrequentie (hoogste historische significantie)
+    extracted.sort(key=lambda x: x["peak_val_pct"], reverse=True)
+    return extracted[:max_results]
 
 
 # ==============================================================================
@@ -560,6 +676,129 @@ class GraphRAGEngine:
         )
 
         return True, f"'{clean_t.title()}' succesvol toegevoegd en live gekoppeld aan '{self.graph.nodes[connected_node].get('label', connected_node)}'!"
+
+    def mine_and_ingest_google_books_database(
+        self,
+        term: str,
+        corpus: str = "en-US-2019",
+        max_items: int = 5,
+    ) -> Tuple[bool, str, List[Dict[str, Any]]]:
+        """
+        Bevraagt rechtstreeks de officiële Google Books Ngram Viewer database met wildcard expansies,
+        haalt de authentieke historische co-occurrenties/collocaties op en integreert ze dynamisch
+        in de Kennisgraaf met getypeerde relaties en gewichten.
+        """
+        clean_t = term.strip()
+        if not clean_t:
+            return False, "Voer een geldige zoekterm in om de Google Books database te bevragen.", []
+
+        root_id = clean_t.lower()
+
+        # Zorg dat het hoofdconcept bestaat in de graaf
+        if root_id not in self.graph:
+            metrics = self.get_entity_live_ngram_metrics(clean_t)
+            peak_yr = metrics.get("peak_year", 2000)
+            self.graph.add_node(
+                root_id,
+                label=clean_t.title(),
+                category="Concept",
+                period=f"{peak_yr} (Piek)",
+                ngram=clean_t,
+                desc=f"Geïmporteerd uit de Google Books Ngram Database ({corpus}). Piekjaar: {peak_yr}.",
+                color=CATEGORY_COLORS.get("Concept", "#1a73e8"),
+                is_database_root=True,
+                peak_year=peak_yr,
+                peak_val_pct=metrics.get("peak_val_pct", 0.0),
+            )
+
+            # Verbind root node met bestaand netwerk op basis van temporele nabijheid
+            closest_dist = 999
+            bridge_node = None
+            for n, attrs in self.graph.nodes(data=True):
+                if n != root_id and attrs.get("period"):
+                    try:
+                        yr = int(attrs["period"][:4])
+                        dist = abs(yr - peak_yr)
+                        if dist < closest_dist:
+                            closest_dist = dist
+                            bridge_node = n
+                    except Exception:
+                        continue
+
+            if not bridge_node:
+                bridge_node = "climate" if "climate" in self.graph else list(self.graph.nodes)[0]
+
+            self.graph.add_edge(
+                bridge_node,
+                root_id,
+                relation_type="CO_TEMPORAL_WITH",
+                weight=0.80,
+                explanation=f"Kennisgraaf overbrugging rond tijdvak {peak_yr}.",
+            )
+
+        # Mijn associaties uit de Google Books database
+        associations = mine_google_ngram_associations(clean_t, corpus=corpus, max_results=max_items)
+        if not associations:
+            return False, f"Geen significante historische co-locaties gevonden in Google Books voor '{clean_t}'.", []
+
+        added_labels = []
+        for assoc in associations:
+            ng = assoc["ngram"]
+            nid = ng.lower()
+            peak_yr = assoc["peak_year"]
+            pk_pct = assoc["peak_val_pct"]
+
+            if nid not in self.graph:
+                self.graph.add_node(
+                    nid,
+                    label=assoc["clean_label"],
+                    category="Google Books Database",
+                    period=f"{peak_yr} (Piek)",
+                    ngram=ng,
+                    desc=(
+                        f"Geminete co-locatie uit Google Books Ngram Database ({corpus}). "
+                        f"Historisch piekjaar: {peak_yr} met een boekfrequentie van {pk_pct:.5f}%."
+                    ),
+                    color=CATEGORY_COLORS.get("Google Books Database", "#0288d1"),
+                    peak_year=peak_yr,
+                    peak_val_pct=pk_pct,
+                    is_database_ingested=True,
+                )
+                added_labels.append(assoc["clean_label"])
+
+            # Bepaal richting en gewicht
+            edge_weight = min(0.95, max(0.60, pk_pct * 15000))
+            if assoc["direction"] == "prefix":
+                u, v = nid, root_id
+                expl = f"'{assoc['clean_label']}' trad historisch frequent op met piek rond {peak_yr} in boeken."
+            else:
+                u, v = root_id, nid
+                expl = f"'{clean_t.title()}' co-occurreert frequent met '{assoc['clean_label']}' (piek {peak_yr})."
+
+            self.graph.add_edge(
+                u,
+                v,
+                relation_type="CO_OCCURS_IN_GOOGLE_BOOKS",
+                weight=round(edge_weight, 3),
+                explanation=expl,
+            )
+
+            # Automatische kruisverbindingen met bestaande knooppunten
+            for existing_n in list(self.graph.nodes()):
+                if existing_n not in (nid, root_id) and existing_n in nid:
+                    self.graph.add_edge(
+                        existing_n,
+                        nid,
+                        relation_type="SUB_CONCEPT_OF",
+                        weight=0.75,
+                        explanation="Conceptuele deelrelatie ontdekt via Google Books Ngram index.",
+                    )
+
+        msg = (
+            f"Succesvol {len(associations)} historische associaties gemined uit Google Books Ngram Database "
+            f"voor '{clean_t.title()}': {', '.join([a['clean_label'] for a in associations])}."
+        )
+        return True, msg, associations
 
     # --------------------------------------------------------------------------
     # MODUS A: LOCAL SEARCH (Ego-graaf & directe relaties)

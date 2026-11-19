@@ -918,6 +918,9 @@ def main() -> None:
     if "pending_search_query" in st.session_state and st.session_state["pending_search_query"] is not None:
         st.session_state["search_query"] = st.session_state.pop("pending_search_query")
 
+    if "pending_rag_entity" in st.session_state and st.session_state["pending_rag_entity"] is not None:
+        st.session_state["rag_active_entity_choice"] = st.session_state.pop("pending_rag_entity")
+
     if "search_query" not in st.session_state:
         st.session_state["search_query"] = "climate, democracy, telegram"
     if "selected_pos_label" not in st.session_state:
@@ -1622,14 +1625,19 @@ def main() -> None:
         entity_id_map = {e["label"]: e["id"] for e in all_entities}
 
         # ----------------------------------------------------------------------
-        # BOVENBALK: ZOEKACTIES & CATEGORIE FILTER & LIVE NGRAM TOEVOEGEN
+        # BOVENBALK: ZOEKACTIES & CATEGORIE FILTER & GOOGLE BOOKS DATABASE
         # ----------------------------------------------------------------------
-        bar_col1, bar_col2, bar_col3 = st.columns([3.0, 2.0, 1.8])
+        cur_sel = st.session_state.get("rag_active_entity_choice")
+        if not cur_sel or cur_sel not in entity_labels:
+            def_idx = entity_labels.index("Klimaat / Climate") if "Klimaat / Climate" in entity_labels else 0
+            cur_sel = entity_labels[def_idx]
+            st.session_state["rag_active_entity_choice"] = cur_sel
+
+        bar_col1, bar_col2, bar_col3 = st.columns([2.8, 1.8, 2.4])
         with bar_col1:
             selected_label = st.selectbox(
                 "Selecteer entiteit ter verkenning:",
                 options=entity_labels,
-                index=entity_labels.index("Klimaat / Climate") if "Klimaat / Climate" in entity_labels else 0,
                 key="rag_active_entity_choice",
                 label_visibility="collapsed",
             )
@@ -1642,22 +1650,75 @@ def main() -> None:
                 label_visibility="collapsed",
             )
         with bar_col3:
-            with st.popover("➕ Voeg live Ngram toe", use_container_width=True):
-                st.markdown("**Voeg een live Ngram-term toe aan de graaf**")
-                new_term = st.text_input("Zoekterm (bijv. 'quantum', 'cinema', 'dna'):", key="custom_ngram_inp")
-                new_cat = st.selectbox(
-                    "Categorie:",
-                    options=["Live Ngram Concept", "Wetenschap & Fysica", "Literatuur & Cultuur", "Technologie"],
-                    key="custom_ngram_cat",
+            with st.popover("🌐 Google Books Database", use_container_width=True):
+                st.markdown("#### 🌐 Google Books Ngram Database")
+                st.caption(
+                    "Rechtstreekse verbinding met de officiële Google Books Ngram Viewer database "
+                    "en de AWS S3 Open Data backend (~2,2 TB)."
                 )
-                if st.button("Voeg toe & Haal Live Ngram op", type="primary", use_container_width=True):
-                    if new_term:
-                        succ, msg = rag_engine.add_custom_live_term(new_term, new_cat)
-                        if succ:
-                            st.success(msg)
-                            st.rerun()
+
+                sub_miner_tab, sub_single_tab, sub_s3_tab = st.tabs(["🔍 Associatieminer", "➕ Enkele term", "🗄️ AWS S3 Status"])
+
+                with sub_miner_tab:
+                    st.markdown("**Mijn historische concepten & co-occurrenties:**")
+                    mine_query = st.text_input(
+                        "Concept (bijv. 'robot', 'energy', 'democracy', 'steam', 'peace'):",
+                        key="rag_db_mine_inp",
+                    )
+                    mine_corpus_choice = st.selectbox(
+                        "Corpus:",
+                        options=[
+                            "American English (2019)",
+                            "British English (2019)",
+                            "European Fiction (2019)",
+                        ],
+                        key="rag_db_corpus_sel",
+                    )
+                    corpus_code_map = {
+                        "American English (2019)": "en-US-2019",
+                        "British English (2019)": "en-GB-2019",
+                        "European Fiction (2019)": "en-fiction-2019",
+                    }
+                    mine_corpus_code = corpus_code_map.get(mine_corpus_choice, "en-US-2019")
+                    max_assocs_num = st.slider("Aantal associaties:", min_value=3, max_value=8, value=5, key="rag_db_max_items")
+
+                    if st.button("🚀 Mijn & Voeg toe aan Graaf", type="primary", use_container_width=True, key="rag_db_mine_btn"):
+                        if mine_query.strip():
+                            with st.spinner("Google Books database bevragen..."):
+                                succ, msg, assocs = rag_engine.mine_and_ingest_google_books_database(
+                                    mine_query.strip(), corpus=mine_corpus_code, max_items=max_assocs_num
+                                )
+                                if succ:
+                                    st.session_state["pending_rag_entity"] = mine_query.strip().title()
+                                    st.toast(f"Succesvol gemined: {len(assocs)} Google Books associaties!")
+                                    st.rerun()
+                                else:
+                                    st.warning(msg)
                         else:
-                            st.warning(msg)
+                            st.warning("Voer een conceptnaam in om de database te bevragen.")
+
+                with sub_single_tab:
+                    st.markdown("**Voeg een individuele Ngram-term toe:**")
+                    new_term = st.text_input("Zoekterm (bijv. 'quantum', 'cinema', 'dna'):", key="custom_ngram_inp")
+                    new_cat = st.selectbox(
+                        "Categorie:",
+                        options=["Live Ngram Concept", "Wetenschap & Fysica", "Literatuur & Cultuur", "Technologie"],
+                        key="custom_ngram_cat",
+                    )
+                    if st.button("Voeg toe & Haal Live Ngram op", use_container_width=True, key="custom_single_add_btn"):
+                        if new_term:
+                            succ, msg = rag_engine.add_custom_live_term(new_term, new_cat)
+                            if succ:
+                                st.session_state["pending_rag_entity"] = new_term.strip().title()
+                                st.success(msg)
+                                st.rerun()
+                            else:
+                                st.warning(msg)
+
+                with sub_s3_tab:
+                    st.markdown("**AWS S3 Open Data Hadoop Partities:**")
+                    st.code("s3://datasets.elasticmapreduce/ngrams/books/20090715/", language="bash")
+                    st.caption("Status: Actieve Cloud Verbinding naar ~2,2 TB ruwe sequence files.")
 
         # ----------------------------------------------------------------------
         # CENTRALE INTERACTIEVE VIS.JS KENNISGRAAF
@@ -1711,6 +1772,32 @@ def main() -> None:
                         st.session_state["pending_search_query"] = active_local_res["ngram"]
                         st.toast(f"'{active_local_res['ngram']}' klaargezet in Ngram Viewer!")
                         st.rerun()
+
+                # Directe Google Books Database ontdekking & bronbadge
+                is_db_node = active_local_res.get("category") == "Google Books Database" or rag_engine.graph.nodes[active_entity_id].get("is_database_ingested")
+                db_bar_c1, db_bar_c2 = st.columns([3.2, 1.8])
+                with db_bar_c1:
+                    if st.button(
+                        f"🌐 Mijn live associaties voor '{selected_label}' uit Google Books Database",
+                        key=f"mine_more_btn_{active_local_res['entity_id']}",
+                        help="Zoekt in de officiële Google Books index naar authentieke bigrams en historische co-occurrenties voor dit concept en breidt de graaf dynamisch uit.",
+                    ):
+                        with st.spinner(f"Co-occurrenties zoeken in Google Books voor '{selected_label}'..."):
+                            term_to_mine = active_local_res.get("ngram", active_local_res["label"])
+                            succ, msg, assocs = rag_engine.mine_and_ingest_google_books_database(
+                                term_to_mine, corpus="en-US-2019", max_items=5
+                            )
+                            if succ:
+                                st.session_state["pending_rag_entity"] = selected_label
+                                st.toast(f"{len(assocs)} co-occurrenties uit Google Books toegevoegd aan de graaf!")
+                                st.rerun()
+                            else:
+                                st.warning(msg)
+                with db_bar_c2:
+                    if is_db_node:
+                        st.caption("Bron: **Google Books Database** (AWS Open Data & Live API)")
+                    else:
+                        st.caption("Bron: **Kennisgraaf Ontologie & Live Ngram Index**")
 
                 # Twee kolommen voor synthese en relaties
                 c_info1, c_info2 = st.columns([3.0, 2.0])
