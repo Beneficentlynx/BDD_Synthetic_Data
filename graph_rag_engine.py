@@ -621,14 +621,24 @@ class GraphRAGEngine:
         self._ngram_cache[entity_id] = metrics
         return metrics
 
-    def add_custom_live_term(self, term: str, category: str = "Live Ngram Concept", connect_to_id: Optional[str] = None) -> Tuple[bool, str]:
+    def add_custom_live_term(
+        self,
+        term: str,
+        category: str = "Live Ngram Concept",
+        connect_to_id: Optional[str] = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Tuple[bool, str]:
         """
         Voegt een willekeurige zoekterm uit de Google Books Ngram Viewer live toe aan de kennisgraaf,
-        haalt de actuele tijdreeks op en verbindt deze met bestaande concepten.
+        haalt de actuele tijdreeks op en verbindt deze optioneel met bestaande concepten.
         """
         clean_t = term.strip()
         if not clean_t:
             return False, "Geen term opgegeven."
+
+        if not connect_to_id:
+            connect_to_id = kwargs.get("connect_to_id")
 
         node_id = clean_t.lower()
         if node_id in self.graph:
@@ -691,6 +701,8 @@ class GraphRAGEngine:
         corpus: str = "en-US-2019",
         max_items: int = 5,
         connect_to_existing_id: Optional[str] = None,
+        *args: Any,
+        **kwargs: Any,
     ) -> Tuple[bool, str, List[Dict[str, Any]]]:
         """
         Bevraagt rechtstreeks de officiële Google Books Ngram Viewer database met wildcard expansies,
@@ -702,6 +714,9 @@ class GraphRAGEngine:
         clean_t = term.strip()
         if not clean_t:
             return False, "Voer een geldige zoekterm in om de Google Books database te bevragen.", []
+
+        if not connect_to_existing_id:
+            connect_to_existing_id = kwargs.get("connect_to_existing_id")
 
         root_id = clean_t.lower()
 

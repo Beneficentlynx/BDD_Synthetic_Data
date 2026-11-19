@@ -1614,11 +1614,9 @@ def main() -> None:
             "of voeg live termen uit Google Books toe."
         )
 
-        @st.cache_resource
-        def get_rag_engine() -> GraphRAGEngine:
-            return GraphRAGEngine()
-
-        rag_engine = get_rag_engine()
+        if "rag_engine" not in st.session_state:
+            st.session_state["rag_engine"] = GraphRAGEngine()
+        rag_engine = st.session_state["rag_engine"]
         all_entities = rag_engine.get_all_entities()
         all_categories = ["Alles"] + rag_engine.get_categories()
         entity_labels = [e["label"] for e in all_entities]
