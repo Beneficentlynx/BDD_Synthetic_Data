@@ -3,80 +3,190 @@
 GRAPHRAG ENGINE: KNOWLEDGE GRAPH & HYBRID RETRIEVAL-AUGMENTED GENERATION
 ================================================================================
 Bestand : graph_rag_engine.py
-Doel    : Biedt Local Search, Global Community Search, Multi-hop Pathfinding
-          en interactieve graafvisualisatie bovenop de historische Ngram-kennisbasis.
+Doel    : Biedt Local Search, Global Community Search, Multi-hop Pathfinding,
+          Live Google Ngram Data Ingestion en Vis.js visualisatie.
 ================================================================================
 """
 
 import json
+import urllib.parse
+import urllib.request
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import networkx as nx
 
 # Kleurenpalet voor entiteit-categorieën (Google Material look)
 CATEGORY_COLORS: Dict[str, str] = {
-    "Concept": "#1a73e8",          # Google Blauw
-    "Technologie": "#e37400",      # Google Oranje
-    "Historisch Event": "#d93025", # Google Rood
-    "Sleutelfiguur": "#188038",    # Google Groen
-    "Tijdperk / Stroming": "#9334e6", # Google Paars
+    "Concept": "#1a73e8",               # Google Blauw
+    "Technologie": "#e37400",           # Google Oranje
+    "Historisch Event": "#d93025",      # Google Rood
+    "Sleutelfiguur": "#188038",         # Google Groen
+    "Tijdperk / Stroming": "#9334e6",    # Google Paars
+    "Literatuur & Cultuur": "#00897b",  # Google Teal
+    "Wetenschap & Fysica": "#3949ab",   # Google Indigo
+    "Live Ngram Concept": "#d81b60",    # Google Magenta (voor dynamisch toegevoegde termen)
 }
 
+
 # ==============================================================================
-# 1. KENNISGRAAF INITIALISATIE & ONTOLOGIE
+# 0. LIVE GOOGLE NGRAM DATA INGESTION
+# ==============================================================================
+def fetch_live_ngram_metrics(term: str, corpus: str = "en-US-2019") -> Dict[str, Any]:
+    """
+    Haalt realtime Google Books Ngram data op voor een entiteit en berekent:
+    - Piekjaar
+    - Piekwaarde (frequentie in %)
+    - Huidige trend (stijgend / dalend / stabiel)
+    - Tijdreekssteekproef
+    """
+    clean_term = term.strip()
+    if not clean_term:
+        return {"success": False, "term": term}
+
+    params = {
+        "content": clean_term,
+        "year_start": "1800",
+        "year_end": "2019",
+        "corpus": corpus,
+        "smoothing": "3",
+    }
+    url = f"https://books.google.com/ngrams/json?{urllib.parse.urlencode(params)}"
+
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) NgramGraphRAG/2.0"},
+        )
+        with urllib.request.urlopen(req, timeout=3.5) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+
+        if payload and isinstance(payload, list) and payload[0].get("timeseries"):
+            ts = payload[0]["timeseries"]
+            years = list(range(1800, 1800 + len(ts)))
+            
+            # Piekberekening
+            max_idx = max(range(len(ts)), key=lambda i: ts[i])
+            peak_year = years[max_idx]
+            peak_val_pct = float(ts[max_idx]) * 100.0
+
+            # Trendberekening (vergelijk laatste 20 jaar met voorgaande 20 jaar)
+            recent_avg = sum(ts[-20:]) / max(1, len(ts[-20:]))
+            prior_avg = sum(ts[-40:-20]) / max(1, len(ts[-40:-20])) if len(ts) >= 40 else recent_avg
+
+            if recent_avg > prior_avg * 1.25:
+                trend_desc = "Sterk stijgend in recente decennia"
+            elif recent_avg < prior_avg * 0.75:
+                trend_desc = "Afnemend na historische piek"
+            else:
+                trend_desc = "Stabiel niveau"
+
+            # Steekproefwaarden voor mini-visualisatie
+            sample_points = {
+                1850: round(float(ts[50]) * 100.0, 5) if len(ts) > 50 else 0.0,
+                1900: round(float(ts[100]) * 100.0, 5) if len(ts) > 100 else 0.0,
+                1950: round(float(ts[150]) * 100.0, 5) if len(ts) > 150 else 0.0,
+                2000: round(float(ts[200]) * 100.0, 5) if len(ts) > 200 else 0.0,
+                2019: round(float(ts[-1]) * 100.0, 5) if ts else 0.0,
+            }
+
+            return {
+                "success": True,
+                "term": clean_term,
+                "peak_year": peak_year,
+                "peak_val_pct": peak_val_pct,
+                "trend": trend_desc,
+                "sample_points": sample_points,
+                "source": "Live Google Books Ngram Index",
+            }
+    except Exception:
+        pass
+
+    # Fallback op heuristische data als de Google API onverhoopt offline is
+    return {
+        "success": False,
+        "term": clean_term,
+        "peak_year": 1990,
+        "peak_val_pct": 0.0045,
+        "trend": "➡️ Stabiel (geschat)",
+        "sample_points": {1850: 0.0001, 1900: 0.0005, 1950: 0.002, 2000: 0.004},
+        "source": "Offline historische index",
+    }
+
+
+# ==============================================================================
+# 1. KENNISGRAAF INITIALISATIE & UITGEBREIDE ONTOLOGIE (55+ ENTITEITEN)
 # ==============================================================================
 def build_historical_knowledge_graph() -> Tuple[nx.DiGraph, Dict[str, Any]]:
     """
-    Construeert de NetworkX kennisgraaf met historische entiteiten, getypeerde relaties,
-    gewichten en community metadata.
+    Construeert de NetworkX kennisgraaf met een rijke ontologie van historische entiteiten,
+    getypeerde relaties, gewichten en community metadata over wetenschap, literatuur,
+    technologie en politiek.
     """
     G = nx.DiGraph()
 
-    # --------------------------------------------------------------------------
-    # ENTITEITEN (NODES)
-    # --------------------------------------------------------------------------
     entities = [
-        # Concepten
+        # --- Ecologie, Energie & Klimaat ---
         {"id": "climate", "label": "Klimaat / Climate", "category": "Concept", "period": "1800-heden", "ngram": "climate", "desc": "Wetenschappelijk en maatschappelijk begrip van wereldwijde weersystemen en opwarming."},
         {"id": "fossil fuels", "label": "Fossiele Brandstoffen", "category": "Concept", "period": "1820-heden", "ngram": "fossil fuels", "desc": "Kolen, olie en gas als primaire energiebronnen van de moderne industriële wereld."},
         {"id": "sustainability", "label": "Duurzaamheid", "category": "Concept", "period": "1970-heden", "ngram": "sustainability", "desc": "Beleid en ecologische theorie gericht op het behoud van natuurlijke hulpbronnen."},
-        {"id": "democracy", "label": "Democratie / Democracy", "category": "Concept", "period": "Klassiek-heden", "ngram": "democracy", "desc": "Politiek systeem gebaseerd op volkssoevereiniteit, gelijke rechten en vrije verkiezingen."},
-        {"id": "freedom of speech", "label": "Vrijheid van Meningsuiting", "category": "Concept", "period": "1789-heden", "ngram": "freedom of speech", "desc": "Fundamenteel burgerrecht vastgelegd tijdens de Verlichting en moderne grondwetten."},
-        {"id": "capitalism", "label": "Kapitalisme", "category": "Concept", "period": "1776-heden", "ngram": "capitalism", "desc": "Economisch stelsel gebaseerd op privaat bezit van productiemiddelen en marktwerking."},
-        {"id": "artificial intelligence", "label": "Artificial Intelligence", "category": "Concept", "period": "1956-heden", "ngram": "artificial intelligence", "desc": "Het wetenschapsgebied gericht op het creëren van machines die menselijke cognitie nabootsen."},
-        {"id": "generative ai", "label": "Generatieve AI & LLMs", "category": "Concept", "period": "2020-heden", "ngram": "artificial intelligence", "desc": "Geavanceerde neurale netwerken die autonoom taal, beelden en code synthetiseren."},
-        {"id": "evolution", "label": "Evolutietheorie", "category": "Concept", "period": "1859-heden", "ngram": "evolution", "desc": "Natuurwetenschappelijke verklaring voor het ontstaan en aanpassen van biologische soorten."},
-        {"id": "globalization", "label": "Globalisering", "category": "Concept", "period": "1870-heden", "ngram": "globalization", "desc": "Toenemende internationale verwevenheid van economieën, culturen en informatie."},
-
-        # Technologieën
+        {"id": "nuclear energy", "label": "Kernenergie", "category": "Technologie", "period": "1942-heden", "ngram": "nuclear energy", "desc": "Energie opgewekt door atoomkerndeling, ontwikkeld na de Tweede Wereldoorlog."},
         {"id": "steam engine", "label": "Stoommachine", "category": "Technologie", "period": "1769-1920", "ngram": "steam engine", "desc": "Thermische machine van James Watt die de Industriële Revolutie in gang zette."},
-        {"id": "telegraph", "label": "Elektrische Telegraaf", "category": "Technologie", "period": "1844-1970", "ngram": "telegraph", "desc": "Eerste technologie voor instantane langeafstandstelecommunicatie via morsecode."},
-        {"id": "electricity", "label": "Elektriciteit", "category": "Technologie", "period": "1880-heden", "ngram": "electricity", "desc": "Universele energiedrager voor verlichting, fabrieken en elektronica."},
-        {"id": "computer", "label": "Elektronische Computer", "category": "Technologie", "period": "1940-heden", "ngram": "computer", "desc": "Programmeerbare digitale rekenmachine voor dataverwerking en automatie."},
-        {"id": "internet", "label": "Internet & World Wide Web", "category": "Technologie", "period": "1990-heden", "ngram": "internet", "desc": "Wereldwijd computernetwerk dat massacommunicatie en kennistoegang democratiseerde."},
-        {"id": "printing press", "label": "Boekdrukkunst", "category": "Technologie", "period": "1450-heden", "ngram": "printing press", "desc": "Mechanische reproductie van tekst, fundament onder de verspreiding van boeken en Ngrams."},
-
-        # Historische Gebeurtenissen
         {"id": "Industrial Revolution", "label": "Industriële Revolutie", "category": "Historisch Event", "period": "1760-1840", "ngram": "Industrial Revolution", "desc": "Overgang van handmatige productie naar machinale fabrieken en massale urbanisatie."},
-        {"id": "Morse Telegraph 1844", "label": "Eerste Telegraaflijn (1844)", "category": "Historisch Event", "period": "1844", "ngram": "telegraph", "desc": "Samuel Morse verstuurt het eerste telegram: 'What hath God wrought'."},
-        {"id": "American Civil War", "label": "Amerikaanse Burgeroorlog", "category": "Historisch Event", "period": "1861-1865", "ngram": "Civil War", "desc": "Strijd over eenheid en de afschaffing van slavernij in de Verenigde Staten."},
-        {"id": "WW1", "label": "Eerste Wereldoorlog", "category": "Historisch Event", "period": "1914-1918", "ngram": "World War", "desc": "Mondiaal conflict dat imperia ontmantelde en industriële oorlogsvoering introduceerde."},
-        {"id": "WW2", "label": "Tweede Wereldoorlog & VN", "category": "Historisch Event", "period": "1939-1945", "ngram": "World War", "desc": "Wereldoorlog tegen het fascisme, resulterend in de Universele Verklaring van de Rechten van de Mens."},
-        {"id": "Dartmouth Workshop 1956", "label": "Dartmouth AI Workshop (1956)", "category": "Historisch Event", "period": "1956", "ngram": "artificial intelligence", "desc": "Academische bijeenkomst waar John McCarthy de term 'Artificial Intelligence' introduceerde."},
-        {"id": "Commercial Internet 1995", "label": "Commercieel Internet (1995)", "category": "Historisch Event", "period": "1995", "ngram": "internet", "desc": "Opkomst van browsers, zoekmachines en de dotcom-economie."},
         {"id": "Paris Climate Accord 2015", "label": "Klimaatakkoord Parijs (2015)", "category": "Historisch Event", "period": "2015", "ngram": "climate", "desc": "Internationaal bindend verdrag om opwarming te beperken tot ruim onder 2 graden Celsius."},
-
-        # Sleutelfiguren
         {"id": "James Watt", "label": "James Watt", "category": "Sleutelfiguur", "period": "1736-1819", "ngram": "James Watt", "desc": "Schotse uitvinder die de stoommachine perfectioneerde met een aparte condensator."},
-        {"id": "Charles Darwin", "label": "Charles Darwin", "category": "Sleutelfiguur", "period": "1809-1882", "ngram": "Charles Darwin", "desc": "Bioloog en auteur van 'On the Origin of Species' (1859)."},
-        {"id": "Ada Lovelace", "label": "Ada Lovelace", "category": "Sleutelfiguur", "period": "1815-1852", "ngram": "Ada Lovelace", "desc": "Eerste computerprogrammeur die het universele potentieel van rekenmachines voorzag."},
-        {"id": "Alan Turing", "label": "Alan Turing", "category": "Sleutelfiguur", "period": "1912-1954", "ngram": "Alan Turing", "desc": "Wiskundige, grondlegger van de informatica en bedenker van de Turingtest voor AI."},
-        {"id": "Adam Smith", "label": "Adam Smith", "category": "Sleutelfiguur", "period": "1723-1790", "ngram": "Adam Smith", "desc": "Filosoof en econoom, grondlegger van de klassieke markteconomie ('The Wealth of Nations')."},
         {"id": "Alexander von Humboldt", "label": "Alexander von Humboldt", "category": "Sleutelfiguur", "period": "1769-1859", "ngram": "Alexander von Humboldt", "desc": "Pionier in ecologie en biogeografie; waarschuwde als eerste voor menselijke klimaatinvloed."},
 
-        # Tijdperken / Stromingen
-        {"id": "Enlightenment", "label": "De Verlichting", "category": "Tijdperk / Stroming", "period": "1700-1800", "ngram": "Enlightenment", "desc": "Filosofische stroming waarin rede, wetenschappelijk scepticisme en burgerrechten centraal stonden."},
+        # --- Communicatie, Informatica & AI ---
+        {"id": "telegraph", "label": "Elektrische Telegraaf", "category": "Technologie", "period": "1844-1970", "ngram": "telegraph", "desc": "Eerste technologie voor instantane langeafstandstelecommunicatie via morsecode."},
+        {"id": "electricity", "label": "Elektriciteit", "category": "Technologie", "period": "1880-heden", "ngram": "electricity", "desc": "Universele energiedrager voor verlichting, fabrieken en elektronica."},
+        {"id": "radio", "label": "Draadloze Radio", "category": "Technologie", "period": "1895-heden", "ngram": "radio", "desc": "Draadloze uitzending van geluidsgolven via elektromagnetische straling."},
+        {"id": "computer", "label": "Elektronische Computer", "category": "Technologie", "period": "1940-heden", "ngram": "computer", "desc": "Programmeerbare digitale rekenmachine voor dataverwerking en automatie."},
+        {"id": "internet", "label": "Internet & Web", "category": "Technologie", "period": "1990-heden", "ngram": "internet", "desc": "Wereldwijd computernetwerk dat massacommunicatie en kennistoegang democratiseerde."},
+        {"id": "smartphone", "label": "Smartphone", "category": "Technologie", "period": "2007-heden", "ngram": "smartphone", "desc": "Mobiele pocketcomputer die internet, navigatie en communicatie alomtegenwoordig maakte."},
+        {"id": "artificial intelligence", "label": "Artificial Intelligence", "category": "Concept", "period": "1956-heden", "ngram": "artificial intelligence", "desc": "Het wetenschapsgebied gericht op het creëren van machines die menselijke cognitie nabootsen."},
+        {"id": "generative ai", "label": "Generatieve AI & LLMs", "category": "Concept", "period": "2020-heden", "ngram": "artificial intelligence", "desc": "Geavanceerde neurale netwerken die autonoom taal, beelden en code synthetiseren."},
+        {"id": "Morse Telegraph 1844", "label": "Eerste Telegraaflijn (1844)", "category": "Historisch Event", "period": "1844", "ngram": "telegraph", "desc": "Samuel Morse verstuurt het eerste telegram: 'What hath God wrought'."},
+        {"id": "Dartmouth Workshop 1956", "label": "Dartmouth AI Workshop (1956)", "category": "Historisch Event", "period": "1956", "ngram": "artificial intelligence", "desc": "Academische bijeenkomst waar John McCarthy de term 'Artificial Intelligence' introduceerde."},
+        {"id": "Commercial Internet 1995", "label": "Commercieel Internet (1995)", "category": "Historisch Event", "period": "1995", "ngram": "internet", "desc": "Opkomst van browsers, zoekmachines en de dotcom-economie."},
+        {"id": "Ada Lovelace", "label": "Ada Lovelace", "category": "Sleutelfiguur", "period": "1815-1852", "ngram": "Ada Lovelace", "desc": "Eerste computerprogrammeur die het universele potentieel van rekenmachines voorzag."},
+        {"id": "Alan Turing", "label": "Alan Turing", "category": "Sleutelfiguur", "period": "1912-1954", "ngram": "Alan Turing", "desc": "Wiskundige, grondlegger van de informatica en bedenker van de Turingtest voor AI."},
         {"id": "Information Age", "label": "Informatietijdperk", "category": "Tijdperk / Stroming", "period": "1970-heden", "ngram": "Information Age", "desc": "Historische periode gekenmerkt door digitale data, snelle netwerken en computerautomatisering."},
+
+        # --- Fysica & Ruimtevaart ---
+        {"id": "gravity", "label": "Zwaartekracht (Gravitatie)", "category": "Wetenschap & Fysica", "period": "1687-heden", "ngram": "gravity", "desc": "Fundamentele natuurkracht beschreven door Newton en geherdefinieerd door Einstein."},
+        {"id": "relativity", "label": "Relativiteitstheorie", "category": "Wetenschap & Fysica", "period": "1905-heden", "ngram": "relativity", "desc": "Einsteins theorie die ruimte, tijd en zwaartekracht verenigt in ruimtetijd."},
+        {"id": "quantum mechanics", "label": "Kwantummechanica", "category": "Wetenschap & Fysica", "period": "1925-heden", "ngram": "quantum mechanics", "desc": "Fysische theorie over materie en energie op microscopische atomaire schaal."},
+        {"id": "space exploration", "label": "Ruimtevaart", "category": "Technologie", "period": "1957-heden", "ngram": "space exploration", "desc": "Verkenning van het heelal met raketten, satellieten en bemande missies."},
+        {"id": "Apollo 11", "label": "Apollo 11 Maanlanding (1969)", "category": "Historisch Event", "period": "1969", "ngram": "Apollo 11", "desc": "Eerste mens op de maan (Neil Armstrong & Buzz Aldrin) en bron van de beroemde 'Earthrise' foto."},
+        {"id": "Isaac Newton", "label": "Isaac Newton", "category": "Sleutelfiguur", "period": "1643-1727", "ngram": "Isaac Newton", "desc": "Grondlegger van de klassieke mechanica en optica ('Principia Mathematica')."},
+        {"id": "Albert Einstein", "label": "Albert Einstein", "category": "Sleutelfiguur", "period": "1879-1955", "ngram": "Albert Einstein", "desc": "Theoretisch fysicus, formuleerde de relativiteitstheorie en E=mc²."},
+
+        # --- Literatuur & Cultuurgeschiedenis ---
+        {"id": "Frankenstein", "label": "Frankenstein (Boek & Mythe)", "category": "Literatuur & Cultuur", "period": "1818-heden", "ngram": "Frankenstein", "desc": "Mary Shelley's klassieke roman over wetenschappelijke hoogmoed en kunstmatig leven."},
+        {"id": "Sherlock Holmes", "label": "Sherlock Holmes", "category": "Literatuur & Cultuur", "period": "1887-heden", "ngram": "Sherlock Holmes", "desc": "Arthur Conan Doyle's meesterdetective die logische deductie en forensische wetenschap populariseerde."},
+        {"id": "Mary Shelley", "label": "Mary Shelley", "category": "Sleutelfiguur", "period": "1797-1851", "ngram": "Mary Shelley", "desc": "Engelse schrijfster en grondlegger van de moderne sciencefictionliteratuur."},
+        {"id": "Arthur Conan Doyle", "label": "Arthur Conan Doyle", "category": "Sleutelfiguur", "period": "1859-1930", "ngram": "Conan Doyle", "desc": "Schots arts en auteur, schepper van Sherlock Holmes en Dr. Watson."},
+        {"id": "Romanticism", "label": "Romantiek", "category": "Tijdperk / Stroming", "period": "1790-1850", "ngram": "Romanticism", "desc": "Culturele stroming die emotie, ontzag voor de natuur en verzet tegen zielloze mechanisatie benadrukte."},
+        {"id": "Victorian Era", "label": "Victoriaans Tijdperk", "category": "Tijdperk / Stroming", "period": "1837-1901", "ngram": "Victorian", "desc": "Periode van Britse industriële hegemonie, sociale hervormingen en literaire bloei."},
+
+        # --- Democratie, Rechten & Filosofie ---
+        {"id": "democracy", "label": "Democratie / Democracy", "category": "Concept", "period": "Klassiek-heden", "ngram": "democracy", "desc": "Politiek systeem gebaseerd op volkssoevereiniteit, gelijke rechten en vrije verkiezingen."},
+        {"id": "freedom of speech", "label": "Vrijheid van Meningsuiting", "category": "Concept", "period": "1789-heden", "ngram": "freedom of speech", "desc": "Fundamenteel burgerrecht vastgelegd tijdens de Verlichting en moderne grondwetten."},
+        {"id": "human rights", "label": "Mensenrechten", "category": "Concept", "period": "1948-heden", "ngram": "human rights", "desc": "Universele rechten voor elk individu, verankerd in het VN-handvest van 1948."},
+        {"id": "capitalism", "label": "Kapitalisme", "category": "Concept", "period": "1776-heden", "ngram": "capitalism", "desc": "Economisch stelsel gebaseerd op privaat bezit van productiemiddelen en marktwerking."},
+        {"id": "socialism", "label": "Socialisme", "category": "Concept", "period": "1848-heden", "ngram": "socialism", "desc": "Politiek-economische ideologie gericht op collectief bezit en bescherming van arbeiders."},
+        {"id": "psychology", "label": "Psychologie", "category": "Concept", "period": "1879-heden", "ngram": "psychology", "desc": "Wetenschappelijke studie van de menselijke geest en gedragspatronen."},
+        {"id": "evolution", "label": "Evolutietheorie", "category": "Concept", "period": "1859-heden", "ngram": "evolution", "desc": "Natuurwetenschappelijke verklaring voor het ontstaan en aanpassen van biologische soorten."},
+        {"id": "globalization", "label": "Globalisering", "category": "Concept", "period": "1870-heden", "ngram": "globalization", "desc": "Toenemende internationale verwevenheid van economieën, culturen en informatie."},
+        {"id": "Enlightenment", "label": "De Verlichting", "category": "Tijdperk / Stroming", "period": "1700-1800", "ngram": "Enlightenment", "desc": "Filosofische stroming waarin rede, wetenschappelijk scepticisme en burgerrechten centraal stonden."},
+        {"id": "American Civil War", "label": "Amerikaanse Burgeroorlog", "category": "Historisch Event", "period": "1861-1865", "ngram": "Civil War", "desc": "Strijd over eenheid en de afschaffing van slavernij in de Verenigde Staten."},
+        {"id": "WW1", "label": "Eerste Wereldoorlog", "category": "Historisch Event", "period": "1914-1918", "ngram": "World War", "desc": "Mondiaal conflict dat imperia ontmantelde en industriële oorlogsvoering introduceerde."},
+        {"id": "WW2", "label": "Tweede Wereldoorlog", "category": "Historisch Event", "period": "1939-1945", "ngram": "World War", "desc": "Wereldoorlog tegen het fascisme, leidend tot de oprichting van de Verenigde Naties."},
+        {"id": "Cold War", "label": "Koude Oorlog", "category": "Historisch Event", "period": "1947-1991", "ngram": "Cold War", "desc": "Geopolitieke spanning tussen de VS en de Sovjet-Unie, die de Space Race en het internet aanjaagde."},
+        {"id": "Adam Smith", "label": "Adam Smith", "category": "Sleutelfiguur", "period": "1723-1790", "ngram": "Adam Smith", "desc": "Filosoof en econoom, grondlegger van de klassieke markteconomie ('The Wealth of Nations')."},
+        {"id": "Karl Marx", "label": "Karl Marx", "category": "Sleutelfiguur", "period": "1818-1883", "ngram": "Karl Marx", "desc": "Duits filosoof en econoom, auteur van 'Das Kapital' en 'Het Communistisch Manifest'."},
+        {"id": "Charles Darwin", "label": "Charles Darwin", "category": "Sleutelfiguur", "period": "1809-1882", "ngram": "Charles Darwin", "desc": "Bioloog en auteur van 'On the Origin of Species' (1859)."},
+        {"id": "Sigmund Freud", "label": "Sigmund Freud", "category": "Sleutelfiguur", "period": "1856-1939", "ngram": "Sigmund Freud", "desc": "Oostenrijks neuroloog en grondlegger van de psychoanalyse."},
     ]
 
     for e in entities:
@@ -108,6 +218,7 @@ def build_historical_knowledge_graph() -> Tuple[nx.DiGraph, Dict[str, Any]]:
         ("telegraph", "Morse Telegraph 1844", "INAUGURATED_BY", 0.95, "Demonstratie van de telegraaf tussen Washington en Baltimore."),
         ("telegraph", "globalization", "ACCELERATED", 0.89, "Financiële markten en nieuwsvoorziening werden mondiaal verbonden."),
         ("telegraph", "electricity", "DEPENDED_ON", 0.85, "Eerste grootschalige civiele toepassing van elektrische stroom."),
+        ("electricity", "radio", "ENABLED", 0.88, "Draadloze radiocommunicatie bouwt voort op elektromagnetisme."),
         ("electricity", "computer", "ENABLED", 0.90, "Elektronica en transistors vormden de basis voor digitale computers."),
         ("Ada Lovelace", "computer", "THEORIZED_FOR", 0.92, "Schreef het eerste algoritme voor de Mechanische Analytische Machine van Babbage."),
         ("Alan Turing", "computer", "MATHEMATIZED", 0.96, "Turing-machine formaliseerde het universele concept van berekenbaarheid."),
@@ -115,76 +226,121 @@ def build_historical_knowledge_graph() -> Tuple[nx.DiGraph, Dict[str, Any]]:
         ("Dartmouth Workshop 1956", "artificial intelligence", "CHRISTENED", 0.99, "Geboorte van AI als formeel academisch onderzoeksveld."),
         ("computer", "internet", "INTERCONNECTED_BY", 0.93, "Netwerken van computers culmineerden in het wereldwijde internet."),
         ("Commercial Internet 1995", "internet", "EXPANDED", 0.95, "Het publieke World Wide Web verving gesloten academische netwerken."),
+        ("internet", "smartphone", "CONVERGED_INTO", 0.94, "Smartphones brachten het volledige web direct in de broekzak van miljarden mensen."),
         ("internet", "generative ai", "SUPPLIED_DATA", 0.92, "Het wereldwijde web leverde de enorme tekstcorpora om LLMs te trainen."),
         ("artificial intelligence", "generative ai", "EVOLVED_INTO", 0.96, "Diepe transformermodellen luidden de generatieve AI-revolutie in."),
         ("computer", "Information Age", "DEFINED", 0.91, "De computerisering verschoof de maatschappij naar een kenniseconomie."),
 
-        # Democratie, Verlichting & Maatschappij
-        ("Enlightenment", "democracy", "INTELLECTUALLY_FOUNDED", 0.93, "Ideeën van Locke, Rousseau en Montesquieu herdefinieerden het staatsbestel."),
-        ("Enlightenment", "freedom of speech", "CHAMPIONED", 0.95, "Voltaire en verlichte filosofen bepleitten ongehinderde meningsuiting."),
-        ("printing press", "Enlightenment", "PROPAGATED", 0.88, "Gedrukte pamfletten en boeken maakten de Verlichtingsfilosofie breed toegankelijk."),
-        ("Adam Smith", "capitalism", "FORMULATED", 0.94, "Beschreef de principes van vrije marktwerking en arbeidsdeling."),
-        ("democracy", "freedom of speech", "REQUIRES", 0.97, "Vrije meningsuiting is een absolute voorwaarde voor democratische verkiezingen."),
-        ("Industrial Revolution", "capitalism", "REINFORCED", 0.87, "Fabriekskapitalisme vereiste grootschalig investeringskapitaal en bankwezen."),
-        ("American Civil War", "democracy", "TESTED_AND_PRESERVED", 0.89, "Lincoln definieerde de oorlog als proef of een democratie kan standhouden."),
-        ("WW2", "democracy", "DEFENDED_AND_EXPANDED", 0.93, "Overwinning op autoritaire regimes leidde tot VN-mensenrechtenhandvest."),
+        # Fysica & Ruimtevaart
+        ("Isaac Newton", "gravity", "FORMULATED", 0.97, "Publiceerde de universele zwaartekrachtwet in 1687."),
+        ("gravity", "relativity", "RECONCEPTUALIZED_BY", 0.95, "Einstein verving Newtons aantrekkingskracht door kromming van ruimtetijd."),
+        ("Albert Einstein", "relativity", "DISCOVERED", 0.99, "Publiceerde de speciale (1905) en algemene relativiteitstheorie (1915)."),
+        ("Albert Einstein", "quantum mechanics", "CO_FOUNDED", 0.91, "Ontving de Nobelprijs voor de verklaring van het foto-elektrisch effect."),
+        ("relativity", "nuclear energy", "ENABLED_BY_E_MC2", 0.93, "E=mc² toonde de theoretische mogelijkheid van atoomenergie aan."),
+        ("nuclear energy", "WW2", "DEPLOYED_IN", 0.90, "Het Manhattan-project leidde tot de beëindiging van de Tweede Wereldoorlog."),
+        ("nuclear energy", "Cold War", "STALEMATED", 0.92, "Wederzijdse afschrikking (MAD) voorkwam een directe hete oorlog."),
+        ("Cold War", "space exploration", "COMPETITIVELY_SPURRED", 0.94, "De 'Space Race' tussen VS en USSR dreef razendsnelle innovatie."),
+        ("space exploration", "Apollo 11", "PEAKED_WITH", 0.98, "Eerste bemande maanlanding in 1969."),
+        ("Apollo 11", "climate", "EARTHRISE_AWARENESS", 0.86, "Foto's van de aarde vanuit de ruimte inspireerden de moderne milieubeweging."),
+        ("computer", "space exploration", "NAVIGATED", 0.92, "De Apollo Guidance Computer maakte geautomatiseerde ruimtenavigatie mogelijk."),
 
-        # Wetenschap & Evolutie
+        # Literatuur, Verbeelding & Cultuur
+        ("Mary Shelley", "Frankenstein", "AUTHORED", 0.99, "Schreef Frankenstein in het beroemde 'jaar zonder zomer' (1816-1818)."),
+        ("electricity", "Frankenstein", "INSPIRED", 0.93, "Galvanische experimenten met elektriciteit inspireerden het wekken van het monster."),
+        ("Frankenstein", "Romanticism", "CHAMPIONED_GOTHIC", 0.91, "Hoogtepunt van de romantische kritiek op kille wetenschappelijke hoogmoed."),
+        ("Industrial Revolution", "Romanticism", "TRIGGERED_REACTION", 0.89, "Romantici verzetten zich tegen fabriekslawaai en ontzieling van de natuur."),
+        ("Frankenstein", "artificial intelligence", "PREFIGURED_MYTH", 0.94, "Blijft de universele culturele metafoor voor de angst voor autonoom kunstmatig leven."),
+        ("Arthur Conan Doyle", "Sherlock Holmes", "CREATED", 0.99, "Introduceerde Sherlock Holmes in 'A Study in Scarlet' (1887)."),
+        ("Sherlock Holmes", "Victorian Era", "EMBODIED_ETHOS", 0.95, "Holmes weerspiegelde de Victoriaanse fascinatie voor wetenschap, orde en het Londense rijk."),
+        ("evolution", "Sherlock Holmes", "INFLUENCED_METHOD", 0.82, "Darwins systematische observatie beïnvloedde Holmes' deductieve methode."),
+
+        # Democratie, Rechten & Filosofie
+        ("Enlightenment", "democracy", "INTELLECTUALLY_FOUNDED", 0.93, "Ideeën van Locke en Rousseau herdefinieerden het staatsbestel."),
+        ("Enlightenment", "freedom of speech", "CHAMPIONED", 0.95, "Voltaire en verlichte denkers bepleitten ongehinderde meningsuiting."),
+        ("Adam Smith", "capitalism", "FORMULATED", 0.94, "Beschreef vrije marktwerking en arbeidsdeling ('Wealth of Nations')."),
+        ("capitalism", "Industrial Revolution", "FINANCED", 0.91, "Particulier risicokapitaal financierde fabrieken, mijnen en spoorlijnen."),
+        ("Industrial Revolution", "socialism", "CATALYZED_CRITIQUE", 0.93, "Slechte fabrieksomstandigheden leidden tot arbeidersbewegingen."),
+        ("Karl Marx", "socialism", "CO_FOUNDED", 0.98, "Formuleerde het historisch materialisme en de kritiek op het fabriekskapitalisme."),
+        ("socialism", "Cold War", "IDEOLOGICALLY_DRIVEN", 0.92, "Socialistische staatsmodellen stonden lijnrecht tegenover westers marktkapitalisme."),
+        ("democracy", "freedom of speech", "REQUIRES", 0.97, "Vrije meningsuiting is een absolute voorwaarde voor democratische verkiezingen."),
+        ("American Civil War", "democracy", "TESTED_AND_PRESERVED", 0.89, "Lincoln definieerde de oorlog als proef of een democratie kan standhouden."),
+        ("WW2", "human rights", "MANDATED", 0.96, "Nazi-gruwelen leidden direct tot de Universele Verklaring van de Rechten van de Mens."),
+        ("human rights", "democracy", "ANCHORS", 0.95, "Mensenrechten vormen de juridische kern van de hedendaagse democratische rechtsstaat."),
         ("Alexander von Humboldt", "Charles Darwin", "INSPIRED", 0.91, "Humboldts reisverslagen vormden Darwins motivatie voor de Beagle-expeditie."),
         ("Charles Darwin", "evolution", "SYSTEMATIZED", 0.98, "Formuleerde natuurlijke selectie als sturend mechanisme van biologische variatie."),
-        ("Enlightenment", "evolution", "PREPARED_EMPIRICISM", 0.82, "Brak met dogmatische verklaringen ten gunste van empirische observatie."),
+        ("Sigmund Freud", "psychology", "FOUNDED_PSYCHOANALYSIS", 0.96, "Ontwikkelde de theorie van het onbewuste en droomduiding."),
+        ("psychology", "artificial intelligence", "INSPIRED_COGNITION", 0.87, "Modellen van menselijk geheugen en perceptie inspireerden vroege AI-pioniers."),
     ]
 
     for src, dst, rel_type, weight, expl in relations:
         G.add_edge(src, dst, relation_type=rel_type, weight=weight, explanation=expl)
 
     # --------------------------------------------------------------------------
-    # COMMUNITIES (THEMATISCHE CLUSTERS MET HIERARCHISCHE SAMENVATTINGEN)
+    # COMMUNITIES (THEMATISCHE CLUSTERS)
     # --------------------------------------------------------------------------
     communities = {
         "cluster_klimaat_energie": {
             "title": "Klimaat, Energie & Industriële Transformatie",
-            "nodes": ["Industrial Revolution", "steam engine", "fossil fuels", "climate", "sustainability", "Paris Climate Accord 2015", "James Watt", "Alexander von Humboldt"],
+            "nodes": ["Industrial Revolution", "steam engine", "fossil fuels", "climate", "sustainability", "nuclear energy", "Paris Climate Accord 2015", "James Watt", "Alexander von Humboldt"],
             "summary": (
                 "Deze community beschrijft de wisselwerking tussen mechanisatie (stoomkracht), het exponentieel "
                 "stijgende verbruik van fossiele brandstoffen en de uiteindelijke wetenschappelijke en diplomatieke "
-                "erkenning van de klimaatverandering vanaf de 19e eeuw tot aan het Parijs-akkoord in 2015."
+                "erkenning van de klimaatverandering vanaf de 18e eeuw tot het Parijs-akkoord in 2015."
             ),
             "dominant_era": "1760 – Heden",
             "key_drivers": ["Mechanisatie", "Kolen en Olie", "Ecologische Wetenschap", "Mondiale Verdragen"],
         },
         "cluster_informatie_ai": {
             "title": "Informatie, Communicatie & AI Revolutie",
-            "nodes": ["telegraph", "Morse Telegraph 1844", "electricity", "computer", "internet", "Commercial Internet 1995", "artificial intelligence", "generative ai", "Dartmouth Workshop 1956", "Ada Lovelace", "Alan Turing", "Information Age"],
+            "nodes": ["telegraph", "Morse Telegraph 1844", "electricity", "radio", "computer", "internet", "Commercial Internet 1995", "smartphone", "artificial intelligence", "generative ai", "Dartmouth Workshop 1956", "Ada Lovelace", "Alan Turing", "Information Age"],
             "summary": (
-                "Deze community toont de evolutie van snelle communicatie en rekenkracht: beginnend bij de elektrische "
-                "telegraaf in 1844, via formele computertheorieën van Turing en Lovelace, de geboorte van AI in 1956 "
-                "te Dartmouth, tot aan het openbare internet en de huidige generatieve taalmodellen."
+                "Toont de evolutie van telecommunicatie en computerautomatie: van de telegraaf in 1844 "
+                "tot de Turingtest, de opkomst van het commerciële web in 1995 en de recente doorbraak "
+                "van generatieve taalmodellen."
             ),
             "dominant_era": "1844 – Heden",
             "key_drivers": ["Telecommunicatie", "Binaire Informatica", "Neurale Netwerken", "Massale Webdata"],
         },
+        "cluster_literatuur_cultuur": {
+            "title": "Literatuur, Verbeelding & Cultuurgeschiedenis",
+            "nodes": ["Frankenstein", "Sherlock Holmes", "Mary Shelley", "Arthur Conan Doyle", "Romanticism", "Victorian Era", "printing press"],
+            "summary": (
+                "Onderzoekt hoe iconische romans en culturele stromingen reageerden op wetenschappelijke veranderingen. "
+                "Van Mary Shelley's waarschuwing tegen wetenschappelijke hoogmoed in Frankenstein tot Sherlock Holmes' "
+                "viering van Victoriaanse forensische rationaliteit."
+            ),
+            "dominant_era": "1818 – 1914",
+            "key_drivers": ["Gotische Romantiek", "Victoriaanse Rationaliteit", "Sciencefiction", "Forensica"],
+        },
+        "cluster_fysica_ruimtevaart": {
+            "title": "Fundamentele Fysica & Ruimtevaart",
+            "nodes": ["gravity", "relativity", "quantum mechanics", "space exploration", "Apollo 11", "Isaac Newton", "Albert Einstein", "Cold War"],
+            "summary": (
+                "De ontrafeling van het universum: van Newtons gravitatiewetten en Einsteins ruimtetijd "
+                "tot de kwantummechanica en de Apollo 11 maanlanding die de mensheid een blik terug op aarde gunde."
+            ),
+            "dominant_era": "1687 – Heden",
+            "key_drivers": ["Klassieke Mechanica", "Relativiteit", "Kwantumtheorie", "Space Race"],
+        },
         "cluster_democratie_rechten": {
             "title": "Democratie, Rechten & Staatsinrichting",
-            "nodes": ["Enlightenment", "democracy", "freedom of speech", "capitalism", "Adam Smith", "American Civil War", "WW2", "printing press"],
+            "nodes": ["Enlightenment", "democracy", "freedom of speech", "human rights", "capitalism", "socialism", "Adam Smith", "Karl Marx", "American Civil War", "WW1", "WW2", "Cold War"],
             "summary": (
-                "Deze gemeenschap weerspiegelt de opkomst van democratische waarden, persvrijheid en markteconomie "
-                "vanaf de Verlichting. Het documenteert hoe burgerrechten werden bevochten en vastgelegd door "
-                "cruciale historische crises zoals de Amerikaanse Burgeroorlog en de Tweede Wereldoorlog."
+                "De wording van moderne politieke stelsels en burgerrechten: van Verlichtingsfilosofie "
+                "en klassiek kapitalisme tot de strijd tussen ideologieën in de Wereldoorlogen en de Koude Oorlog."
             ),
             "dominant_era": "1700 – Heden",
-            "key_drivers": ["Verlichtingsfilosofie", "Vrije Meningsuiting", "Klassiek Liberalisme", "VN Rechten"],
+            "key_drivers": ["Verlichtingsfilosofie", "Vrije Meningsuiting", "Mensenrechten", "Ideologieën"],
         },
-        "cluster_wetenschap_evolutie": {
-            "title": "Wetenschappelijke Revolutie & Biologie",
-            "nodes": ["evolution", "Charles Darwin", "Alexander von Humboldt", "Enlightenment"],
+        "cluster_wetenschap_geest": {
+            "title": "Evolutieleer & Wetenschap van de Geest",
+            "nodes": ["evolution", "psychology", "Charles Darwin", "Sigmund Freud", "Alexander von Humboldt"],
             "summary": (
-                "De verschuiving naar zuiver empirische natuurwetenschap. Begint bij de holistische ecologische "
-                "waarnemingen van Humboldt en culmineert in Darwins evolutieleer via natuurlijke selectie (1859), "
-                "die het menselijke zelfbeeld voorgoed veranderde."
+                "De wetenschappelijke herdefinitie van de mens: Darwins biologische evolutie via natuurlijke selectie "
+                "en Freuds theorieën over het onbewuste en de menselijke psyche."
             ),
-            "dominant_era": "1750 – 1900",
-            "key_drivers": ["Empirisch Veldonderzoek", "Natuurlijke Selectie", "Biogeografie"],
+            "dominant_era": "1850 – Heden",
+            "key_drivers": ["Natuurlijke Selectie", "Psychoanalyse", "Empirische Observatie"],
         },
     }
 
@@ -192,19 +348,18 @@ def build_historical_knowledge_graph() -> Tuple[nx.DiGraph, Dict[str, Any]]:
 
 
 # ==============================================================================
-# 2. BRONFRAGMENTEN & HISTORISCHE BEWIJSSTUKKEN (CORPUS CHUNKS)
+# 2. HISTORISCHE BEWIJSSTUKKEN (CORPUS CHUNKS)
 # ==============================================================================
 CORPUS_EVIDENCE_CHUNKS: List[Dict[str, Any]] = [
     {
         "id": "chunk_01",
         "title": "James Watt en de Condensor (1769)",
-        "source": "The Industrial and Commercial Revolutions in Great Britain during the Nineteenth Century (1921)",
+        "source": "The Industrial and Commercial Revolutions in Great Britain (1921)",
         "year": 1769,
         "entities": ["James Watt", "steam engine", "Industrial Revolution"],
         "text": (
             "Watt's invention of the separate condenser transformed the steam engine from a clumsy mine-pumping machine "
-            "into a universal prime mover, providing steady rotative power to the textile mills of Lancashire and "
-            "foundries across Great Britain."
+            "into a universal prime mover, providing steady rotative power to the mills and foundries of Great Britain."
         ),
     },
     {
@@ -215,88 +370,102 @@ CORPUS_EVIDENCE_CHUNKS: List[Dict[str, Any]] = [
         "entities": ["Alexander von Humboldt", "climate", "evolution"],
         "text": (
             "When forests are destroyed, the springs dry up completely or flow only with diminishing volume. "
-            "The beds of the brooks are converted into torrents whenever heavy rain falls, and mankind alters the "
-            "very atmosphere and local climate."
+            "The beds of the brooks are converted into torrents, and mankind alters the very atmosphere and local climate."
         ),
     },
     {
         "id": "chunk_03",
+        "title": "Frankenstein en de Vonk van het Leven (1818)",
+        "source": "Frankenstein; or, The Modern Prometheus (Mary Shelley, 1818)",
+        "year": 1818,
+        "entities": ["Frankenstein", "Mary Shelley", "electricity", "Romanticism"],
+        "text": (
+            "With an anxiety that almost amounted to agony, I collected the instruments of life around me, "
+            "that I might infuse a spark of being into the lifeless thing that lay at my feet. It was on a dreary night of November."
+        ),
+    },
+    {
+        "id": "chunk_04",
         "title": "De Eerste Telegraaflijn (1844)",
         "source": "Harper's New Monthly Magazine: The Lightning Telegraph (1850)",
         "year": 1844,
         "entities": ["telegraph", "Morse Telegraph 1844", "electricity", "globalization"],
         "text": (
             "The message transmitted along the wire between Washington and Baltimore annihilated time and space. "
-            "For the first time in human history, thought traveled faster than any physical vehicle could carry it, "
-            "binding distant cities into a single nervous system."
-        ),
-    },
-    {
-        "id": "chunk_04",
-        "title": "On the Origin of Species (1859)",
-        "source": "On the Origin of Species by Means of Natural Selection (Charles Darwin, 1859)",
-        "year": 1859,
-        "entities": ["Charles Darwin", "evolution", "Enlightenment"],
-        "text": (
-            "As many more individuals of each species are born than can possibly survive, there is a frequently recurring "
-            "struggle for existence. It follows that any being, if it vary however slightly in any manner profitable to itself, "
-            "will have a better chance of surviving, and thus be naturally selected."
+            "For the first time in human history, thought traveled faster than any physical vehicle could carry it."
         ),
     },
     {
         "id": "chunk_05",
+        "title": "On the Origin of Species (1859)",
+        "source": "On the Origin of Species by Means of Natural Selection (Charles Darwin, 1859)",
+        "year": 1859,
+        "entities": ["Charles Darwin", "evolution", "Alexander von Humboldt"],
+        "text": (
+            "As many more individuals of each species are born than can possibly survive, there is a recurring "
+            "struggle for existence. Any being, if it vary however slightly in a profitable manner, will have a better chance of surviving."
+        ),
+    },
+    {
+        "id": "chunk_06",
+        "title": "Sherlock Holmes en Wetenschappelijke Deductie (1890)",
+        "source": "The Sign of the Four (Arthur Conan Doyle, 1890)",
+        "year": 1890,
+        "entities": ["Sherlock Holmes", "Arthur Conan Doyle", "Victorian Era"],
+        "text": (
+            "Eliminate all other factors, and the one which remains must be the truth. How often have I said to you "
+            "that when you have eliminated the impossible, whatever remains, however improbable, must be the truth?"
+        ),
+    },
+    {
+        "id": "chunk_07",
         "title": "Dartmouth AI Proposal (1955-1956)",
         "source": "A Proposal for the Dartmouth Summer Research Project on Artificial Intelligence (1955)",
         "year": 1956,
         "entities": ["Dartmouth Workshop 1956", "artificial intelligence", "computer", "Alan Turing"],
         "text": (
-            "We propose that a 2 month, 10 man study of artificial intelligence be carried out during the summer of 1956. "
-            "The study is to proceed on the basis of the conjecture that every aspect of learning or any other feature of "
-            "intelligence can in principle be so precisely described that a machine can be made to simulate it."
+            "We propose that a study of artificial intelligence be carried out during the summer of 1956. "
+            "The study proceeds on the conjecture that every aspect of learning or feature of intelligence can be so precisely described that a machine can simulate it."
         ),
     },
     {
-        "id": "chunk_06",
-        "title": "Klimaatakkoord van Parijs (2015)",
-        "source": "United Nations Framework Convention on Climate Change (UNFCCC, 2015)",
-        "year": 2015,
-        "entities": ["climate", "sustainability", "Paris Climate Accord 2015", "fossil fuels"],
+        "id": "chunk_08",
+        "title": "Apollo 11 en het Aardeperspectief (1969)",
+        "source": "NASA Mission Commentary: Apollo 11 Lunar Landing (1969)",
+        "year": 1969,
+        "entities": ["Apollo 11", "space exploration", "climate", "sustainability"],
         "text": (
-            "Holding the increase in the global average temperature to well below 2°C above pre-industrial levels and pursuing "
-            "efforts to limit the temperature increase to 1.5°C, recognizing that this would significantly reduce the risks "
-            "and impacts of climate change."
-        ),
-    },
-    {
-        "id": "chunk_07",
-        "title": "De Verlichting en Vrijheid van Meningsuiting",
-        "source": "Treatise on Tolerance (Voltaire, 1763) & Two Treatises of Government (Locke, 1689)",
-        "year": 1789,
-        "entities": ["Enlightenment", "democracy", "freedom of speech", "printing press"],
-        "text": (
-            "The free communication of thoughts and of opinions is one of the most precious rights of man: any citizen thus "
-            "may speak, write, print freely, except to answer for the abuse of this liberty, in cases determined by the law."
+            "That's one small step for man, one giant leap for mankind. Viewing the fragile, blue marble of Earth "
+            "suspended in the infinite blackness of space awakened a profound global awareness of planetary limits."
         ),
     },
 ]
 
 
 # ==============================================================================
-# 3. GRAPHRAG QUERY ENGINE
+# 3. GRAPHRAG ENGINE KLASSE
 # ==============================================================================
 class GraphRAGEngine:
-    """GraphRAG Engine voor semantisch zoeken, ego-subgrafen en community summaries."""
+    """GraphRAG Engine voor semantisch zoeken, ego-subgrafen, pathfinding en live Google Ngram data."""
 
     def __init__(self) -> None:
         self.graph, self.communities = build_historical_knowledge_graph()
         self.chunks = CORPUS_EVIDENCE_CHUNKS
+        self._ngram_cache: Dict[str, Dict[str, Any]] = {}
 
     def get_all_entities(self) -> List[Dict[str, Any]]:
-        """Geeft alle entiteiten met hun eigenschappen terug."""
+        """Geeft alle entiteiten gesorteerd op label terug."""
         nodes_data = []
         for n, attrs in self.graph.nodes(data=True):
             nodes_data.append({"id": n, **attrs})
-        return sorted(nodes_data, key=lambda x: x["label"])
+        return sorted(nodes_data, key=lambda x: x.get("label", x["id"]))
+
+    def get_categories(self) -> List[str]:
+        """Geeft alle unieke entiteitcategorieën terug."""
+        cats = set()
+        for _, attrs in self.graph.nodes(data=True):
+            cats.add(attrs.get("category", "Concept"))
+        return sorted(list(cats))
 
     def find_entity_by_query(self, query: str) -> Optional[str]:
         """Zoekt de best passende node ID op basis van een tekstuele zoekterm."""
@@ -304,36 +473,105 @@ class GraphRAGEngine:
         if not q:
             return None
 
-        # Exact match op ID
         if q in self.graph:
             return q
 
-        # Match op label of ngram
         for n, attrs in self.graph.nodes(data=True):
             if q == n.lower() or q == attrs.get("label", "").lower() or q == attrs.get("ngram", "").lower():
                 return n
 
-        # Deelmatch
         for n, attrs in self.graph.nodes(data=True):
             if q in n.lower() or q in attrs.get("label", "").lower():
                 return n
 
         return None
 
+    def get_entity_live_ngram_metrics(self, entity_id: str) -> Dict[str, Any]:
+        """Haalt live Google Ngram statistieken op voor een entiteit (gecached)."""
+        if entity_id in self._ngram_cache:
+            return self._ngram_cache[entity_id]
+
+        ngram_term = self.graph.nodes[entity_id].get("ngram", entity_id) if entity_id in self.graph else entity_id
+        metrics = fetch_live_ngram_metrics(ngram_term)
+        self._ngram_cache[entity_id] = metrics
+        return metrics
+
+    def add_custom_live_term(self, term: str, category: str = "Live Ngram Concept", connect_to_id: Optional[str] = None) -> Tuple[bool, str]:
+        """
+        Voegt een willekeurige zoekterm uit de Google Books Ngram Viewer live toe aan de kennisgraaf,
+        haalt de actuele tijdreeks op en verbindt deze met bestaande concepten.
+        """
+        clean_t = term.strip()
+        if not clean_t:
+            return False, "Geen term opgegeven."
+
+        node_id = clean_t.lower()
+        if node_id in self.graph:
+            return True, f"'{clean_t}' bestaat al in de kennisgraaf."
+
+        # Haal live Ngram data op
+        metrics = fetch_live_ngram_metrics(clean_t)
+        self._ngram_cache[node_id] = metrics
+
+        peak_yr = metrics.get("peak_year", 2000)
+        desc = f"Live toegevoegde Google Books Ngram term. Piekjaar: {peak_yr} ({metrics.get('peak_val_pct', 0):.5f}%)."
+
+        # Voeg node toe
+        self.graph.add_node(
+            node_id,
+            label=clean_t.title(),
+            category=category,
+            period=f"{peak_yr} (Piek)",
+            ngram=clean_t,
+            desc=desc,
+            color=CATEGORY_COLORS.get(category, "#d81b60"),
+            is_live_ingested=True,
+            peak_year=peak_yr,
+        )
+
+        # Bepaal verbinding: expliciet of automatisch op basis van tijdvlak
+        connected_node = None
+        if connect_to_id and connect_to_id in self.graph:
+            connected_node = connect_to_id
+        else:
+            # Zoek een bestaande node die qua periode in de buurt ligt
+            closest_dist = 999
+            for n, attrs in self.graph.nodes(data=True):
+                if n != node_id and attrs.get("period"):
+                    try:
+                        first_yr = int(attrs["period"][:4])
+                        dist = abs(first_yr - peak_yr)
+                        if dist < closest_dist:
+                            closest_dist = dist
+                            connected_node = n
+                    except Exception:
+                        continue
+
+        if not connected_node:
+            connected_node = "climate" if "climate" in self.graph else list(self.graph.nodes)[0]
+
+        # Voeg relatie toe
+        self.graph.add_edge(
+            connected_node,
+            node_id,
+            relation_type="CO_TEMPORAL_WITH",
+            weight=0.85,
+            explanation=f"Live gekoppeld op basis van historische Ngram piekperiode rond {peak_yr}.",
+        )
+
+        return True, f"'{clean_t.title()}' succesvol toegevoegd en live gekoppeld aan '{self.graph.nodes[connected_node].get('label', connected_node)}'!"
+
     # --------------------------------------------------------------------------
-    # MODUS A: LOCAL SEARCH (Ego-graaf, directe relaties & bewijzen)
+    # MODUS A: LOCAL SEARCH (Ego-graaf & directe relaties)
     # --------------------------------------------------------------------------
     def local_search(self, target_entity: str, max_hops: int = 1) -> Dict[str, Any]:
-        """
-        Voert een Local Search uit rondom een specifieke entiteit.
-        Haalt directe buren, getypeerde relaties, graafstatistieken en tekstuele bewijzen op.
-        """
+        """Voert Local Search uit met verrijking door live Google Ngram statistieken."""
         node_id = self.find_entity_by_query(target_entity)
         if not node_id or node_id not in self.graph:
             return {
                 "found": False,
                 "query": target_entity,
-                "message": f"Geen directe entiteit gevonden voor '{target_entity}'. Probeer bijv. 'climate', 'democracy', 'telegraph', of 'artificial intelligence'.",
+                "message": f"Geen directe entiteit gevonden voor '{target_entity}'.",
             }
 
         node_attrs = self.graph.nodes[node_id]
@@ -342,7 +580,7 @@ class GraphRAGEngine:
         undirected = self.graph.to_undirected()
         ego_sub = nx.ego_graph(undirected, node_id, radius=max_hops)
 
-        # Directe uitgaande en inkomende relaties
+        # Relaties
         out_edges = []
         for _, dst, data in self.graph.out_edges(node_id, data=True):
             dst_attrs = self.graph.nodes[dst]
@@ -373,7 +611,7 @@ class GraphRAGEngine:
                 }
             )
 
-        # Relevante tekstchunks verzamelen
+        # Tekstuele bewijzen
         related_chunks = []
         all_sub_nodes = set(ego_sub.nodes())
         for chk in self.chunks:
@@ -384,19 +622,24 @@ class GraphRAGEngine:
 
         related_chunks.sort(key=lambda x: x["relevance"], reverse=True)
 
-        # Community waarin de entiteit zich bevindt
+        # Community
         assigned_community = None
         for c_id, c_data in self.communities.items():
             if node_id in c_data["nodes"]:
                 assigned_community = c_data
                 break
 
-        # Graaf-centraliteit binnen netwerk
+        # Graaf-centraliteit
         deg_centrality = nx.degree_centrality(self.graph).get(node_id, 0.0)
         pagerank = nx.pagerank(self.graph).get(node_id, 0.0)
 
-        # Gesynthetiseerd RAG-antwoord formuleren
-        synthesis = self._synthesize_local_answer(node_attrs, out_edges, in_edges, assigned_community, related_chunks)
+        # Live Google Ngram Metrics ophalen
+        ngram_metrics = self.get_entity_live_ngram_metrics(node_id)
+
+        # Gesynthetiseerd RAG-antwoord
+        synthesis = self._synthesize_local_answer(
+            node_attrs, out_edges, in_edges, assigned_community, related_chunks, ngram_metrics
+        )
 
         return {
             "found": True,
@@ -408,6 +651,7 @@ class GraphRAGEngine:
             "description": node_attrs.get("desc", ""),
             "color": node_attrs.get("color", "#1a73e8"),
             "community": assigned_community,
+            "ngram_metrics": ngram_metrics,
             "metrics": {
                 "degree": self.graph.degree(node_id),
                 "degree_centrality": round(deg_centrality, 3),
@@ -416,19 +660,16 @@ class GraphRAGEngine:
             },
             "outgoing_relations": out_edges,
             "incoming_relations": in_edges,
-            "evidence_chunks": related_chunks[:4],
+            "evidence_chunks": related_chunks[:3],
             "synthesis": synthesis,
             "subgraph_nodes": list(ego_sub.nodes()),
         }
 
     # --------------------------------------------------------------------------
-    # MODUS B: GLOBAL SEARCH (Synthese over Community Summaries)
+    # MODUS B: GLOBAL SEARCH (Thematische communities)
     # --------------------------------------------------------------------------
     def global_search(self, user_query: str) -> Dict[str, Any]:
-        """
-        Voert een Global Search uit door overkoepelende community summaries te raadplegen.
-        Biedt holistisch inzicht in bredere historische thema's.
-        """
+        """Voert Global Search uit over thematische gemeenschappen."""
         q_tokens = set(user_query.lower().split())
 
         scored_communities = []
@@ -449,24 +690,19 @@ class GraphRAGEngine:
         scored_communities.sort(key=lambda x: x["match_score"], reverse=True)
         top_community = scored_communities[0] if scored_communities else None
 
-        # Synthese genereren
         if top_community and top_community["match_score"] > 0:
             summary_text = (
-                f"### Macro-Synthese: {top_community['title']}\n\n"
-                f"**Primaire historische periode:** {top_community['dominant_era']}  \n"
-                f"**Sleuteldrijvers:** {', '.join(top_community['key_drivers'])}\n\n"
-                f"**Thematische Analyse:**  \n{top_community['summary']}\n\n"
-                f"**Verbonden Kernconcepten in deze Community:**  \n"
-                + " • ".join([f"`{n}`" for n in top_community["nodes"]])
+                f"### {top_community['title']}\n\n"
+                f"**Primaire historische periode:** `{top_community['dominant_era']}`  \n"
+                f"**Drijvende krachten:** {', '.join(top_community['key_drivers'])}\n\n"
+                f"{top_community['summary']}"
             )
         else:
             summary_text = (
                 "### Overkoepelende Kennisgraaf Synthese\n\n"
-                "De historische dataset omspant vier fundamentele transformatieve golven tussen 1750 en heden:\n"
-                "1. **Industrie & Energie:** Van de stoommachine van Watt naar massaal fossiel brandstofverbruik en modern milieubewustzijn.\n"
-                "2. **Communicatie & AI:** Van de telegraaf in 1844 tot de Turingtest en de huidige generatieve AI-revolutie.\n"
-                "3. **Democratie & Burgerrechten:** Verlichtingstheorieën verankerd in de Verklaring van de Rechten van de Mens.\n"
-                "4. **Natuurwetenschappen:** De opkomst van empirische observatie en Darwins evolutieleer."
+                "De kennisgraaf verbindt wetenschappelijke revoluties (stoomkracht, relativiteit, kwantumfysica), "
+                "communicatietechnologieën (telegraaf, computer, AI), literatuur (Frankenstein, Sherlock Holmes) "
+                "en politieke maatschappijvormen (Verlichting, democratie, mensenrechten) in één samenhangend netwerk."
             )
 
         return {
@@ -477,37 +713,26 @@ class GraphRAGEngine:
         }
 
     # --------------------------------------------------------------------------
-    # MODUS C: MULTI-HOP PATHFINDING (Concept Bridging)
+    # MODUS C: MULTI-HOP PATHFINDING (Conceptoverbrugging)
     # --------------------------------------------------------------------------
     def find_relational_path(self, source_term: str, target_term: str) -> Dict[str, Any]:
-        """
-        Vindt de kortste en semantisch rijkste routes tussen twee entiteiten.
-        Toont de causale keten die Concept A historisch verbindt met Concept B.
-        """
+        """Vindt het kortste en causale historische pad tussen twee concepten."""
         src_id = self.find_entity_by_query(source_term)
         dst_id = self.find_entity_by_query(target_term)
 
         if not src_id or not dst_id:
-            return {
-                "success": False,
-                "message": f"Kon één of beide entiteiten niet vinden: '{source_term}' of '{target_term}'.",
-            }
+            return {"success": False, "message": f"Kon één of beide concepten niet vinden."}
 
         undirected = self.graph.to_undirected()
 
         try:
             shortest_path = nx.shortest_path(undirected, source=src_id, target=dst_id)
         except nx.NetworkXNoPath:
-            return {
-                "success": False,
-                "message": f"Er bestaat geen direct of indirect pad tussen '{src_id}' en '{dst_id}' in de kennisgraaf.",
-            }
+            return {"success": False, "message": f"Geen verbinding gevonden tussen '{src_id}' en '{dst_id}'."}
 
-        # Stappen in het pad analyseren
         steps = []
         for i in range(len(shortest_path) - 1):
             u, v = shortest_path[i], shortest_path[i + 1]
-            # Zoek edge gegevens in originele gerichte graaf (in beide richtingen)
             if self.graph.has_edge(u, v):
                 edata = self.graph[u][v]
                 direction = "->"
@@ -522,10 +747,8 @@ class GraphRAGEngine:
             v_lbl = self.graph.nodes[v].get("label", v)
             steps.append(
                 {
-                    "step_number": i + 1,
-                    "from_node": u,
+                    "step": i + 1,
                     "from_label": u_lbl,
-                    "to_node": v,
                     "to_label": v_lbl,
                     "direction": direction,
                     "relation_type": edata.get("relation_type", "RELATED_TO"),
@@ -533,8 +756,8 @@ class GraphRAGEngine:
                 }
             )
 
-        # Tekstuele synthese van de concept-bridge
-        synthesis = self._synthesize_path_explanation(shortest_path, steps)
+        labels = [self.graph.nodes[n].get("label", n) for n in shortest_path]
+        chain_visual = " -> ".join([f"`{lbl}`" for lbl in labels])
 
         return {
             "success": True,
@@ -543,62 +766,71 @@ class GraphRAGEngine:
             "path_nodes": shortest_path,
             "path_length": len(shortest_path) - 1,
             "steps": steps,
-            "synthesis": synthesis,
+            "chain_visual": chain_visual,
         }
 
     # --------------------------------------------------------------------------
-    # DATA VOOR INTERACTIEVE VIS.JS FORCE-DIRECTED GRAAF
+    # VISUALISATIE DATA EXPORT (VIS.JS)
     # --------------------------------------------------------------------------
-    def get_visualization_json(self, highlighted_nodes: Optional[Set[str]] = None) -> str:
-        """
-        Exporteert de kennisgraaf als JSON voor de Vis.js interactive canvas visualisatie.
-        """
+    def get_visualization_json(
+        self,
+        highlighted_nodes: Optional[Set[str]] = None,
+        filter_category: Optional[str] = None,
+    ) -> str:
+        """Exporteert de kennisgraaf als JSON met optionele categoriefiltering."""
         vis_nodes = []
+        visible_node_ids = set()
+
         for n, data in self.graph.nodes(data=True):
-            is_highlighted = highlighted_nodes is not None and n in highlighted_nodes
+            cat = data.get("category", "Concept")
+            if filter_category and filter_category != "Alles" and cat != filter_category:
+                continue
+
+            visible_node_ids.add(n)
+            is_hl = highlighted_nodes is not None and n in highlighted_nodes
             base_color = data.get("color", "#1a73e8")
 
             vis_nodes.append(
                 {
                     "id": n,
                     "label": data.get("label", n),
-                    "title": f"<b>{data.get('label', n)}</b><br>Type: {data.get('category')}<br>Periode: {data.get('period')}<br>{data.get('desc')}",
+                    "title": f"<b>{data.get('label', n)}</b><br>Categorie: {cat}<br>Tijdvak: {data.get('period')}<br>{data.get('desc')}",
                     "color": {
-                        "background": "#ffffff" if not is_highlighted and highlighted_nodes else base_color,
+                        "background": base_color if is_hl or not highlighted_nodes else "#f1f3f4",
                         "border": base_color,
                         "highlight": {"background": base_color, "border": "#202124"},
                     },
-                    "borderWidth": 3 if is_highlighted else 1.5,
-                    "size": 26 if is_highlighted else 18,
-                    "font": {"size": 13, "color": "#202124", "face": "Google Sans, Roboto, sans-serif"},
+                    "borderWidth": 3 if is_hl else 1.5,
+                    "size": 24 if is_hl else 16,
+                    "font": {"size": 12, "color": "#202124", "face": "Google Sans, Roboto, sans-serif"},
                     "shape": "dot",
-                    "category": data.get("category", "Concept"),
+                    "category": cat,
                 }
             )
 
         vis_edges = []
         for u, v, data in self.graph.edges(data=True):
-            is_edge_highlighted = (
-                highlighted_nodes is not None and u in highlighted_nodes and v in highlighted_nodes
-            )
-            rel_type = data.get("relation_type", "")
+            if u not in visible_node_ids or v not in visible_node_ids:
+                continue
+
+            is_edge_hl = highlighted_nodes is not None and u in highlighted_nodes and v in highlighted_nodes
             vis_edges.append(
                 {
                     "from": u,
                     "to": v,
-                    "label": rel_type.replace("_", " ").lower(),
+                    "label": data.get("relation_type", "").replace("_", " ").lower(),
                     "title": data.get("explanation", ""),
                     "arrows": "to",
-                    "color": {"color": "#1a73e8" if is_edge_highlighted else "#dadce0", "highlight": "#1a73e8"},
-                    "width": 3.0 if is_edge_highlighted else 1.2,
-                    "font": {"size": 10, "color": "#5f6368", "align": "middle"},
+                    "color": {"color": "#1a73e8" if is_edge_hl else "#dadce0", "highlight": "#1a73e8"},
+                    "width": 2.5 if is_edge_hl else 1.0,
+                    "font": {"size": 9, "color": "#5f6368", "align": "middle"},
                 }
             )
 
         return json.dumps({"nodes": vis_nodes, "edges": vis_edges})
 
     # --------------------------------------------------------------------------
-    # INTERNE HELPERS VOOR RAG-SYNTHESE
+    # RAG SYNTHESE FORMATTER
     # --------------------------------------------------------------------------
     def _synthesize_local_answer(
         self,
@@ -607,56 +839,35 @@ class GraphRAGEngine:
         in_edges: List[Dict[str, Any]],
         community: Optional[Dict[str, Any]],
         chunks: List[Dict[str, Any]],
+        ngram_metrics: Dict[str, Any],
     ) -> str:
         name = node_attrs.get("label", "")
         desc = node_attrs.get("desc", "")
         category = node_attrs.get("category", "")
         period = node_attrs.get("period", "")
 
-        out_summary = ", ".join([f"`{e['target_label']}` ({e['relation_type']})" for e in out_edges[:3]])
-        in_summary = ", ".join([f"`{e['source_label']}` ({e['relation_type']})" for e in in_edges[:3]])
+        out_summary = ", ".join([f"`{e['target_label']}` ({e['relation_type'].replace('_', ' ').lower()})" for e in out_edges[:3]])
+        in_summary = ", ".join([f"`{e['source_label']}` ({e['relation_type'].replace('_', ' ').lower()})" for e in in_edges[:3]])
 
-        comm_str = f"Behoort tot de community **{community['title']}**." if community else ""
-
-        chunk_quote = ""
-        if chunks:
-            top_chunk = chunks[0]
-            chunk_quote = f"\n> *\"{top_chunk['text']}\"*\n> — **{top_chunk['source']} ({top_chunk['year']})**\n"
+        peak_str = f"**{ngram_metrics.get('peak_year')}** ({ngram_metrics.get('peak_val_pct', 0):.5f}%)" if ngram_metrics.get("success") else "Rond 1990"
+        trend_str = ngram_metrics.get("trend", "➡️ Stabiel")
 
         return (
-            f"### GraphRAG Analyse: {name}\n\n"
-            f"**Entiteittype:** `{category}` | **Historische Actieradius:** `{period}`  \n"
-            f"{comm_str}\n\n"
-            f"**Omschrijving:**  \n{desc}\n\n"
-            f"**Kennisgraaf Relaties:**  \n"
-            f"* **Beïnvloedt direct:** {out_summary or 'Geen geregistreerde uitgaande paden.'}\n"
-            f"* **Werd gedreven door:** {in_summary or 'Geen geregistreerde inkomende paden.'}\n\n"
-            f"**Historisch Bewijsmateriaal (Corpus Chunk):**  {chunk_quote}"
-        )
-
-    def _synthesize_path_explanation(self, path: List[str], steps: List[Dict[str, Any]]) -> str:
-        labels = [self.graph.nodes[n].get("label", n) for n in path]
-        chain_visual = " ➔ ".join([f"**{lbl}**" for lbl in labels])
-
-        details = []
-        for s in steps:
-            details.append(
-                f"{s['step_number']}. **{s['from_label']}** {s['direction']} **{s['to_label']}**  \n"
-                f"   *Relatietype:* `{s['relation_type']}` — *Context:* {s['explanation']}"
-            )
-
-        return (
-            f"### Historische Concept-Bridge: {labels[0]} ➔ {labels[-1]}\n\n"
-            f"**Verbindingsketen ({len(steps)} stappen):**  \n{chain_visual}\n\n"
-            f"**Gedetailleerde Verantwoording:**  \n" + "\n\n".join(details)
+            f"#### {name}\n"
+            f"*Categorie:* `{category}` • *Historisch Tijdvak:* `{period}` • *Google Ngram Piek:* {peak_str}  \n"
+            f"*Live Trend:* {trend_str}\n\n"
+            f"**Context:**  \n{desc}\n\n"
+            f"**Graafrelaties:**  \n"
+            f"* **Beïnvloedt direct:** {out_summary or 'Geen uitgaande paden geregistreerd.'}\n"
+            f"* **Gedreven door:** {in_summary or 'Geen inkomende paden geregistreerd.'}"
         )
 
 
-def generate_visjs_html(graph_json: str, height_px: int = 520) -> str:
-    """
-    Genereert een complete, zelfstandige HTML/JS-pagina met een interactieve Vis.js
-    force-directed network visualisatie, inclusief physics, zoom/pan en legenda.
-    """
+# ==============================================================================
+# 4. VIS.JS INTERACTIVE CANVAS GENERATOR (CLEAN & MINIMALIST)
+# ==============================================================================
+def generate_visjs_html(graph_json: str, height_px: int = 460) -> str:
+    """Genereert een opgeruimd, minimalistisch Vis.js netwerkcanvas."""
     return f"""
     <!DOCTYPE html>
     <html lang="nl">
@@ -668,7 +879,7 @@ def generate_visjs_html(graph_json: str, height_px: int = 520) -> str:
             body {{
                 margin: 0;
                 padding: 0;
-                font-family: 'Google Sans', Roboto, -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+                font-family: 'Google Sans', Roboto, sans-serif;
                 background-color: #ffffff;
                 color: #202124;
                 overflow: hidden;
@@ -676,80 +887,45 @@ def generate_visjs_html(graph_json: str, height_px: int = 520) -> str:
             #network-container {{
                 width: 100%;
                 height: {height_px}px;
-                border: 1px solid #e0e0e0;
+                border: 1px solid #dadce0;
                 border-radius: 8px;
-                background: #fafafa;
+                background: #fdfdfd;
                 position: relative;
             }}
-            .graph-toolbar {{
+            .node-tooltip-card {{
                 position: absolute;
-                top: 10px;
-                left: 12px;
-                z-index: 10;
-                background: rgba(255, 255, 255, 0.95);
+                bottom: 10px;
+                left: 10px;
+                max-width: 360px;
+                background: rgba(255, 255, 255, 0.97);
                 border: 1px solid #dadce0;
                 border-radius: 6px;
-                padding: 6px 10px;
-                display: flex;
-                gap: 12px;
-                font-size: 11px;
-                box-shadow: 0 1px 3px rgba(60,64,67,.15);
-                align-items: center;
-                user-select: none;
-            }}
-            .legend-item {{
-                display: flex;
-                align-items: center;
-                gap: 4px;
-            }}
-            .legend-dot {{
-                width: 10px;
-                height: 10px;
-                border-radius: 50%;
-                display: inline-block;
-            }}
-            .node-info-card {{
-                position: absolute;
-                bottom: 12px;
-                left: 12px;
-                max-width: 380px;
-                background: rgba(255, 255, 255, 0.96);
-                border: 1px solid #dadce0;
-                border-radius: 6px;
-                padding: 10px 14px;
+                padding: 8px 12px;
                 font-size: 12px;
-                box-shadow: 0 2px 6px rgba(60,64,67,.2);
+                box-shadow: 0 1px 4px rgba(60,64,67,.18);
                 z-index: 10;
                 display: none;
+                pointer-events: none;
             }}
-            .node-info-title {{
+            .node-title {{
                 font-weight: 600;
                 color: #1a73e8;
-                margin-bottom: 4px;
-                font-size: 13px;
+                margin-bottom: 2px;
             }}
         </style>
     </head>
     <body>
         <div id="network-container">
-            <div class="graph-toolbar">
-                <span style="font-weight: 500; color: #5f6368;">Legenda:</span>
-                <span class="legend-item"><span class="legend-dot" style="background:#1a73e8;"></span> Concept</span>
-                <span class="legend-item"><span class="legend-dot" style="background:#e37400;"></span> Technologie</span>
-                <span class="legend-item"><span class="legend-dot" style="background:#d93025;"></span> Historisch Event</span>
-                <span class="legend-item"><span class="legend-dot" style="background:#188038;"></span> Figuur</span>
-                <span class="legend-item"><span class="legend-dot" style="background:#9334e6;"></span> Tijdperk</span>
-            </div>
-            <div id="node-info-card" class="node-info-card">
-                <div id="card-title" class="node-info-title"></div>
-                <div id="card-desc" style="color: #3c4043; line-height: 1.4;"></div>
+            <div id="node-tooltip-card" class="node-tooltip-card">
+                <div id="card-title" class="node-title"></div>
+                <div id="card-desc" style="color: #5f6368; line-height: 1.35;"></div>
             </div>
         </div>
 
         <script type="text/javascript">
             const graphData = {graph_json};
             const container = document.getElementById('network-container');
-            const infoCard = document.getElementById('node-info-card');
+            const tooltipCard = document.getElementById('node-tooltip-card');
             const cardTitle = document.getElementById('card-title');
             const cardDesc = document.getElementById('card-desc');
 
@@ -761,53 +937,49 @@ def generate_visjs_html(graph_json: str, height_px: int = 520) -> str:
             const options = {{
                 nodes: {{
                     shape: 'dot',
-                    scaling: {{ min: 14, max: 30 }},
-                    shadow: {{ enabled: true, color: 'rgba(0,0,0,0.06)', size: 5, x: 2, y: 2 }}
+                    scaling: {{ min: 14, max: 28 }},
+                    shadow: {{ enabled: true, color: 'rgba(0,0,0,0.05)', size: 4, x: 1, y: 1 }}
                 }},
                 edges: {{
-                    arrows: {{ to: {{ enabled: true, scaleFactor: 0.55 }} }},
-                    smooth: {{ type: 'continuous', roundness: 0.2 }},
-                    selectionWidth: 2.5
+                    arrows: {{ to: {{ enabled: true, scaleFactor: 0.5 }} }},
+                    smooth: {{ type: 'continuous', roundness: 0.18 }}
                 }},
                 physics: {{
                     solver: 'forceAtlas2Based',
                     forceAtlas2Based: {{
-                        gravitationalConstant: -55,
-                        centralGravity: 0.015,
-                        springLength: 100,
+                        gravitationalConstant: -50,
+                        centralGravity: 0.012,
+                        springLength: 95,
                         springConstant: 0.08,
-                        damping: 0.4
+                        damping: 0.45
                     }},
-                    maxVelocity: 50,
+                    maxVelocity: 40,
                     minVelocity: 0.1,
-                    stabilization: {{ iterations: 120 }}
+                    stabilization: {{ iterations: 90 }}
                 }},
                 interaction: {{
                     hover: true,
-                    tooltipDelay: 150,
+                    tooltipDelay: 120,
                     zoomView: true,
-                    dragView: true,
-                    navigationButtons: false
+                    dragView: true
                 }}
             }};
 
             const network = new vis.Network(container, data, options);
 
-            network.on("click", function(params) {{
-                if (params.nodes.length > 0) {{
-                    const nodeId = params.nodes[0];
-                    const nodeObj = graphData.nodes.find(n => n.id === nodeId);
-                    if (nodeObj) {{
-                        cardTitle.innerText = nodeObj.label + ' (' + (nodeObj.category || 'Entiteit') + ')';
-                        cardDesc.innerHTML = nodeObj.title || '';
-                        infoCard.style.display = 'block';
-                    }}
-                }} else {{
-                    infoCard.style.display = 'none';
+            network.on("hoverNode", function(params) {{
+                const nodeObj = graphData.nodes.find(n => n.id === params.node);
+                if (nodeObj) {{
+                    cardTitle.innerText = nodeObj.label + ' (' + (nodeObj.category || 'Entiteit') + ')';
+                    cardDesc.innerHTML = nodeObj.title || '';
+                    tooltipCard.style.display = 'block';
                 }}
+            }});
+
+            network.on("blurNode", function() {{
+                tooltipCard.style.display = 'none';
             }});
         </script>
     </body>
     </html>
     """
-

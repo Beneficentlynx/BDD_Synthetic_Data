@@ -1601,15 +1601,14 @@ def main() -> None:
                 st.code("\n".join(s3_result["entries"][:25]), language="text")
 
     # ==========================================================================
-    # TAB 2: GRAPHRAG (KNOWLEDGE GRAPH & SEMANTISCHE RETRIEVAL)
+    # TAB 2: GRAPHRAG (KNOWLEDGE GRAPH & LIVE GOOGLE NGRAM DATA)
     # ==========================================================================
     with tab_graphrag:
-        st.header("GraphRAG: Historische Kennisgraaf & Semantische Retrieval")
-        st.markdown(
-            "GraphRAG verbindt een gestructureerde **Kennisgraaf (Knowledge Graph)** van historische concepten, "
-            "uitvindingen en gebeurtenissen met de Google Books Ngram dataset. "
-            "Kies een zoekmodus om entiteiten lokaal te verkennen, overkoepelende thematische communities "
-            "te analyseren, of historische conceptbruggen (multi-hop) te ontdekken."
+        st.header("GraphRAG: Historische Kennisgraaf & Live Ngram Data")
+        st.caption(
+            "Combineert een gestructureerde Kennisgraaf met de officiële Google Books Ngram dataset. "
+            "Verken relaties tussen wetenschap, literatuur en technologie, ontdek causale conceptbruggen, "
+            "of voeg live termen uit Google Books toe."
         )
 
         @st.cache_resource
@@ -1618,215 +1617,196 @@ def main() -> None:
 
         rag_engine = get_rag_engine()
         all_entities = rag_engine.get_all_entities()
+        all_categories = ["Alles"] + rag_engine.get_categories()
         entity_labels = [e["label"] for e in all_entities]
         entity_id_map = {e["label"]: e["id"] for e in all_entities}
 
-        rag_mode = st.radio(
-            "Selecteer GraphRAG Zoekmodus:",
-            options=[
-                "🔍 Lokale Entiteit & Subgraaf (Local Search)",
-                "🌐 Thematische Community Synthese (Global Search)",
-                "🧭 Multi-Hop Conceptoverbrugging (Pathfinding)",
-            ],
-            horizontal=True,
-            key="graphrag_mode_selection",
+        # ----------------------------------------------------------------------
+        # BOVENBALK: ZOEKACTIES & CATEGORIE FILTER & LIVE NGRAM TOEVOEGEN
+        # ----------------------------------------------------------------------
+        bar_col1, bar_col2, bar_col3 = st.columns([3.0, 2.0, 1.8])
+        with bar_col1:
+            selected_label = st.selectbox(
+                "Selecteer entiteit ter verkenning:",
+                options=entity_labels,
+                index=entity_labels.index("Klimaat / Climate") if "Klimaat / Climate" in entity_labels else 0,
+                key="rag_active_entity_choice",
+                label_visibility="collapsed",
+            )
+        with bar_col2:
+            filter_cat = st.selectbox(
+                "Filter graaf op categorie:",
+                options=all_categories,
+                index=0,
+                key="rag_cat_filter_choice",
+                label_visibility="collapsed",
+            )
+        with bar_col3:
+            with st.popover("➕ Voeg live Ngram toe", use_container_width=True):
+                st.markdown("**Voeg een live Ngram-term toe aan de graaf**")
+                new_term = st.text_input("Zoekterm (bijv. 'quantum', 'cinema', 'dna'):", key="custom_ngram_inp")
+                new_cat = st.selectbox(
+                    "Categorie:",
+                    options=["Live Ngram Concept", "Wetenschap & Fysica", "Literatuur & Cultuur", "Technologie"],
+                    key="custom_ngram_cat",
+                )
+                if st.button("Voeg toe & Haal Live Ngram op", type="primary", use_container_width=True):
+                    if new_term:
+                        succ, msg = rag_engine.add_custom_live_term(new_term, new_cat)
+                        if succ:
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.warning(msg)
+
+        # ----------------------------------------------------------------------
+        # CENTRALE INTERACTIEVE VIS.JS KENNISGRAAF
+        # ----------------------------------------------------------------------
+        active_entity_id = entity_id_map.get(selected_label, "climate")
+        active_local_res = rag_engine.local_search(active_entity_id, max_hops=1)
+        active_highlight_nodes = set(active_local_res["subgraph_nodes"]) if active_local_res["found"] else None
+
+        vis_json_str = rag_engine.get_visualization_json(
+            highlighted_nodes=active_highlight_nodes,
+            filter_category=filter_cat,
+        )
+        components.html(generate_visjs_html(vis_json_str, height_px=440), height=455, scrolling=False)
+
+        # ----------------------------------------------------------------------
+        # OVERZICHTELIJKE SUB-TABS (VOORKOMT VERTICALE OVERLOAD)
+        # ----------------------------------------------------------------------
+        sub_tab_explore, sub_tab_path, sub_tab_clusters = st.tabs(
+            [
+                "🔎 Entiteit & Live Ngram Analyse",
+                "🧭 Conceptoverbrugging (Pathfinding)",
+                "🌐 Thematische Clusters",
+            ]
         )
 
-        st.markdown('<div class="ngram-filter-divider"></div>', unsafe_allow_html=True)
+        # SUB-TAB 1: LOKALE ANALYSE & LIVE GOOGLE NGRAM DATA
+        with sub_tab_explore:
+            if active_local_res["found"]:
+                metrics_data = active_local_res.get("ngram_metrics", {})
 
-        active_highlight_nodes: Optional[Set[str]] = None
-
-        # ----------------------------------------------------------------------
-        # MODUS 1: LOCAL SEARCH (Ego-graaf & directe relaties)
-        # ----------------------------------------------------------------------
-        if "Lokale Entiteit" in rag_mode:
-            c_sel1, c_sel2 = st.columns([3.5, 1.5])
-            with c_sel1:
-                default_idx = entity_labels.index("Klimaat / Climate") if "Klimaat / Climate" in entity_labels else 0
-                selected_label = st.selectbox(
-                    "Kies een entiteit of historisch concept uit de kennisgraaf:",
-                    options=entity_labels,
-                    index=default_idx,
-                    key="rag_local_entity_choice",
-                )
-            with c_sel2:
-                max_hops = st.selectbox(
-                    "Zoekradius (hops):",
-                    options=[1, 2],
-                    index=0,
-                    key="rag_local_radius",
-                    help="1 hop = directe buren; 2 hops = uitgebreide context.",
-                )
-
-            target_id = entity_id_map.get(selected_label, "climate")
-            local_res = rag_engine.local_search(target_id, max_hops=max_hops)
-
-            res_col1, res_col2 = st.columns([3.2, 1.8])
-            with res_col1:
-                st.markdown(local_res["synthesis"])
-
-                # Directe relatietabel
-                st.markdown("##### Directe Graaf-Relaties")
-                rel_rows = []
-                for out_e in local_res["outgoing_relations"]:
-                    rel_rows.append(
-                        {
-                            "Richting": "Uitgaand ➔",
-                            "Gerelateerde Entiteit": out_e["target_label"],
-                            "Type": out_e["relation_type"],
-                            "Sterkte": f"{out_e['weight']:.2f}",
-                            "Historische Context": out_e["explanation"],
-                        }
-                    )
-                for in_e in local_res["incoming_relations"]:
-                    rel_rows.append(
-                        {
-                            "Richting": "Inkomend ⬅",
-                            "Gerelateerde Entiteit": in_e["source_label"],
-                            "Type": in_e["relation_type"],
-                            "Sterkte": f"{in_e['weight']:.2f}",
-                            "Historische Context": in_e["explanation"],
-                        }
-                    )
-                if rel_rows:
-                    st.dataframe(pd.DataFrame(rel_rows), use_container_width=True, hide_index=True)
-
-            with res_col2:
-                with st.container(border=True):
-                    st.subheader("Entiteit Visitekaartje")
-                    st.write(f"**Naam:** {local_res['label']}")
-                    st.write(f"**Categorie:** `{local_res['category']}`")
-                    st.write(f"**Tijdvak:** `{local_res['period']}`")
-                    st.write(f"**Ngram Term:** `{local_res['ngram']}`")
-                    st.write(f"**Buren in subgraaf:** `{local_res['metrics']['neighbors_count']}`")
-                    st.write(f"**PageRank Score:** `{local_res['metrics']['pagerank']}`")
-
-                    st.divider()
-                    st.markdown("**1-Klik Ngram Viewer Koppeling:**")
+                # KPI Metrics balk
+                kpi_c1, kpi_c2, kpi_c3, kpi_c4 = st.columns([1.5, 1.5, 2.0, 1.8])
+                with kpi_c1:
+                    pk_yr = metrics_data.get("peak_year", "—")
+                    st.metric("Google Ngram Piek", f"{pk_yr}")
+                with kpi_c2:
+                    pk_pct = f"{metrics_data.get('peak_val_pct', 0):.5f}%" if metrics_data.get("peak_val_pct") else "—"
+                    st.metric("Piekfrequentie", pk_pct)
+                with kpi_c3:
+                    trend_val = metrics_data.get("trend", "Stabiel")
+                    st.metric("Trend in Boeken", trend_val)
+                with kpi_c4:
+                    st.write("")
                     if st.button(
-                        f"📈 Visualiseer '{local_res['ngram']}' in Ngram Viewer",
+                        f"📈 Plot in Ngram Viewer",
                         type="primary",
                         use_container_width=True,
-                        key=f"plot_local_btn_{local_res['entity_id']}",
+                        key=f"plot_local_clean_btn_{active_local_res['entity_id']}",
+                        help="Opent direct de tijdreeks van dit concept in de interactieve grafiek",
                     ):
-                        st.session_state["pending_search_query"] = local_res["ngram"]
-                        st.toast(f"Zoekterm '{local_res['ngram']}' klaargezet in Ngram Viewer!")
+                        st.session_state["pending_search_query"] = active_local_res["ngram"]
+                        st.toast(f"'{active_local_res['ngram']}' klaargezet in Ngram Viewer!")
                         st.rerun()
 
-            with st.expander("Geraadpleegde Historische Bronfragmenten (Evidence Chunks)", expanded=False):
-                if local_res["evidence_chunks"]:
-                    for chk in local_res["evidence_chunks"]:
-                        st.markdown(f"**{chk['title']}** — *{chk['source']} ({chk['year']})*")
-                        st.caption(f"Betrokken entiteiten: {', '.join(chk['entities'])}")
-                        st.info(chk["text"])
-                else:
-                    st.write("Geen directe tekstchunks geregistreerd voor deze entiteit.")
+                # Twee kolommen voor synthese en relaties
+                c_info1, c_info2 = st.columns([3.0, 2.0])
+                with c_info1:
+                    st.markdown(active_local_res["synthesis"])
 
-            active_highlight_nodes = set(local_res["subgraph_nodes"])
+                with c_info2:
+                    st.markdown("**Belangrijkste Graafrelaties:**")
+                    all_rels = active_local_res["outgoing_relations"][:4] + active_local_res["incoming_relations"][:3]
+                    for r in all_rels:
+                        dir_icon = "->" if r.get("direction") == "uitgaand" else "<-"
+                        target_name = r.get("target_label", r.get("source_label", ""))
+                        st.markdown(
+                            f"• {dir_icon} **{target_name}**  \n"
+                            f"  <span style='color:#5f6368;font-size:12px;'>`{r['relation_type']}` — {r['explanation']}</span>",
+                            unsafe_allow_html=True,
+                        )
 
-        # ----------------------------------------------------------------------
-        # MODUS 2: GLOBAL SEARCH (Thematische communities)
-        # ----------------------------------------------------------------------
-        elif "Thematische Community" in rag_mode:
+                # Bronfragmenten (Corpus Chunks) netjes inklapbaar
+                with st.expander("Historische Bronfragmenten & Tekstbewijzen", expanded=False):
+                    if active_local_res["evidence_chunks"]:
+                        for chk in active_local_res["evidence_chunks"]:
+                            st.markdown(f"**{chk['title']}** — *{chk['source']} ({chk['year']})*")
+                            st.caption(f"Gekoppelde entiteiten: {', '.join(chk['entities'])}")
+                            st.info(chk["text"])
+                    else:
+                        st.caption("Geen letterlijke tekstchunks voor deze entiteit geregistreerd.")
+
+        # SUB-TAB 2: MULTI-HOP PATHFINDING (CONCEPT BRIDGING)
+        with sub_tab_path:
             st.markdown(
-                "Stel een overkoepelende vraag over historische trends, of selecteer een community "
-                "om de macro-synthese te inspecteren."
+                "Ontdek het causale historische pad dat twee begrippen over de decennia met elkaar verbindt."
             )
-
-            preset_prompts = [
-                "Welke wisselwerking bestond er tussen industriële revolutie, stoomkracht en klimaat?",
-                "Hoe ontstond het vakgebied Artificial Intelligence uit communicatietechnologie?",
-                "Hoe verhouden Verlichtingsidealen zich tot moderne burgerrechten en democratie?",
-                "Wat was de invloed van empirisch onderzoek op Darwins evolutieleer?",
-            ]
-            chosen_prompt = st.selectbox("Snelle voorbeeldvragen:", options=preset_prompts, key="rag_preset_q")
-
-            global_q = st.text_input(
-                "Of typ je eigen overkoepelende vraag:",
-                value=chosen_prompt,
-                key="rag_custom_global_q",
-            )
-
-            global_res = rag_engine.global_search(global_q)
-            st.markdown(global_res["synthesis"])
-
-            top_c = global_res.get("top_community")
-            if top_c:
-                st.markdown("##### Entiteiten in deze Thematische Community")
-                c_chips = " • ".join([f"`{n}`" for n in top_c["nodes"]])
-                st.markdown(c_chips)
-
-                # Ngram Bridge om het gehele cluster samen te plotten
-                comm_ngrams = ", ".join(
-                    [rag_engine.graph.nodes[n].get("ngram", n) for n in top_c["nodes"][:4]]
-                )
-                if st.button(
-                    f"📈 Vergelijk Cluster in Ngram Viewer ('{comm_ngrams}')",
-                    type="primary",
-                    key="plot_cluster_terms_btn",
-                ):
-                    st.session_state["pending_search_query"] = comm_ngrams
-                    st.toast("Thematisch cluster klaargezet in Ngram Viewer!")
-                    st.rerun()
-
-                active_highlight_nodes = set(top_c["nodes"])
-
-        # ----------------------------------------------------------------------
-        # MODUS 3: MULTI-HOP PATHFINDING (Conceptoverbrugging)
-        # ----------------------------------------------------------------------
-        else:
-            st.markdown(
-                "Vind de kortste en meest invloedrijke historische route tussen twee willekeurige concepten "
-                "en ontdek hoe zij causaal met elkaar verbonden zijn."
-            )
-
             p_col1, p_col2 = st.columns(2)
             with p_col1:
                 def_src = entity_labels.index("Stoommachine") if "Stoommachine" in entity_labels else 0
-                src_label = st.selectbox("Startconcept (Concept A):", options=entity_labels, index=def_src, key="path_src_select")
+                src_label = st.selectbox("Startconcept (A):", options=entity_labels, index=def_src, key="clean_path_src")
             with p_col2:
                 def_dst = entity_labels.index("Klimaat / Climate") if "Klimaat / Climate" in entity_labels else 1
-                dst_label = st.selectbox("Doelconcept (Concept B):", options=entity_labels, index=def_dst, key="path_dst_select")
+                dst_label = st.selectbox("Doelconcept (B):", options=entity_labels, index=def_dst, key="clean_path_dst")
 
             src_id = entity_id_map.get(src_label, "steam engine")
             dst_id = entity_id_map.get(dst_label, "climate")
 
             path_res = rag_engine.find_relational_path(src_id, dst_id)
-
             if path_res["success"]:
-                st.markdown(path_res["synthesis"])
+                st.markdown(f"**Gevonden Route ({path_res['path_length']} stappen):**")
+                st.markdown(f"### {path_res['chain_visual']}")
 
-                # Ngram bridge voor het hele pad
+                # 1-klik knop om hele keten in Ngram viewer te plotten
                 chain_ngrams = ", ".join(
                     [rag_engine.graph.nodes[n].get("ngram", n) for n in path_res["path_nodes"]]
                 )
                 if st.button(
-                    f"📈 Visualiseer Historische Keten in Ngram Viewer ('{chain_ngrams}')",
+                    f"📈 Visualiseer Hele Keten in Ngram Viewer ('{chain_ngrams}')",
                     type="primary",
-                    key="plot_path_chain_btn",
+                    key="plot_clean_chain_btn",
                 ):
                     st.session_state["pending_search_query"] = chain_ngrams
-                    st.toast("Historische keten klaargezet in Ngram Viewer!")
+                    st.toast("Keten klaargezet in Ngram Viewer!")
                     st.rerun()
 
-                active_highlight_nodes = set(path_res["path_nodes"])
+                with st.expander("Toon stapsgewijze historische verklaring", expanded=True):
+                    for s in path_res["steps"]:
+                        st.markdown(
+                            f"**Stap {s['step']}:** {s['from_label']} {s['direction']} **{s['to_label']}**  \n"
+                            f"*{s['relation_type']}:* {s['explanation']}"
+                        )
             else:
                 st.warning(path_res["message"])
-                active_highlight_nodes = None
 
-        # ----------------------------------------------------------------------
-        # INTERACTIEVE FORCE-DIRECTED GRAAFVISUALISATIE (VIS.JS)
-        # ----------------------------------------------------------------------
-        st.markdown('<div class="ngram-filter-divider"></div>', unsafe_allow_html=True)
-        st.subheader("Interactieve Kennisgraaf (Force-Directed Physics & Multi-Hop)")
-        st.caption(
-            "Sleep de bollen om relaties te verplaatsen, gebruik de muis om in- en uit te zoomen, "
-            "en klik op een bol om details direct in de informatiekaart te openen."
-        )
+        # SUB-TAB 3: THEMATISCHE CLUSTERS (GLOBAL COMMUNITIES)
+        with sub_tab_clusters:
+            st.markdown("Macro-analyses van de voornaamste historische stromingen en ontwikkelingen:")
+            comm_list = list(rag_engine.communities.values())
+            for idx in range(0, len(comm_list), 2):
+                row_cols = st.columns(2)
+                for c_offset in range(2):
+                    if idx + c_offset < len(comm_list):
+                        c_item = comm_list[idx + c_offset]
+                        with row_cols[c_offset]:
+                            with st.container(border=True):
+                                st.subheader(c_item["title"])
+                                st.caption(f"Periode: **{c_item['dominant_era']}** • Drijvers: {', '.join(c_item['key_drivers'])}")
+                                st.write(c_item["summary"])
 
-        vis_json_str = rag_engine.get_visualization_json(highlighted_nodes=active_highlight_nodes)
-        vis_html_str = generate_visjs_html(vis_json_str, height_px=520)
-        components.html(vis_html_str, height=540, scrolling=False)
+                                cluster_terms = ", ".join(
+                                    [rag_engine.graph.nodes[n].get("ngram", n) for n in c_item["nodes"][:3]]
+                                )
+                                if st.button(
+                                    f"📈 Plot Cluster ('{cluster_terms}')",
+                                    key=f"plot_cluster_box_btn_{idx + c_offset}",
+                                ):
+                                    st.session_state["pending_search_query"] = cluster_terms
+                                    st.toast(f"Cluster termen klaargezet in Ngram Viewer!")
+                                    st.rerun()
 
     # ==========================================================================
     # TAB 3: DOCUMENTATIE
